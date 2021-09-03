@@ -40,7 +40,7 @@
 #include "CodeSigningTypes.h"
 #include <CommonCrypto/CommonHMAC.h>
 #include <CommonCrypto/CommonDigest.h>
-#include <CommonCrypto/CommonDigestSPI.h>
+#include "CommonDigestSPI.h"
 
 #define NO_ULEB
 #include "Architectures.hpp"
@@ -840,7 +840,7 @@ int dyld_shared_cache_extract_dylibs(const char* shared_cache_file_path, const c
 }
 
 
-#if 0
+#if 1
 // test program
 #include <stdio.h>
 #include <stddef.h>

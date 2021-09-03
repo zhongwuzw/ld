@@ -66,6 +66,7 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		0E2AB79126E1C2040008C7E6 /* CommonDigestSPI.h in Sources */ = {isa = PBXBuildFile; fileRef = 0E2AB79026E1C2040008C7E6 /* CommonDigestSPI.h */; };
 		373C58F1219CE478003442D5 /* BootArgs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 373C58EF219CE478003442D5 /* BootArgs.cpp */; };
 		37554F3B1E3F0FD200407388 /* Manifest.mm in Sources */ = {isa = PBXBuildFile; fileRef = 37908A281E3A853E009613FA /* Manifest.mm */; };
 		37554F3C1E3F0FD200407388 /* DyldSharedCache.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F98692141DC3EF6C00CBEDE6 /* DyldSharedCache.cpp */; };
@@ -662,6 +663,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		0E2AB79026E1C2040008C7E6 /* CommonDigestSPI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CommonDigestSPI.h; sourceTree = "<group>"; };
 		3703A1241B38C1B300ADBA7F /* dyld_shared_cache_builder */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = dyld_shared_cache_builder; sourceTree = BUILT_PRODUCTS_DIR; };
 		373C58EF219CE478003442D5 /* BootArgs.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = BootArgs.cpp; path = dyld3/BootArgs.cpp; sourceTree = "<group>"; };
 		373C58F0219CE478003442D5 /* BootArgs.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = BootArgs.h; path = dyld3/BootArgs.h; sourceTree = "<group>"; };
@@ -1185,6 +1187,7 @@
 		F9ED4C870630A72200DF4E74 = {
 			isa = PBXGroup;
 			children = (
+				0E2AB79026E1C2040008C7E6 /* CommonDigestSPI.h */,
 				F9F6F4261C1FAF8000BD8FED /* testing */,
 				F971DD121A4A0E0700BBDD52 /* configs */,
 				F9ED4CBB0630A7AA00DF4E74 /* src */,
@@ -2263,6 +2266,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F9D1001814D8D13D00099D91 /* dsc_extractor.cpp in Sources */,
+				0E2AB79126E1C2040008C7E6 /* CommonDigestSPI.h in Sources */,
 				F9D1001D14D8D19500099D91 /* dsc_iterator.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -3498,7 +3502,7 @@
 				INSTALL_PATH = "$(INSTALL_PATH_PREFIX)$(INSTALL_LOCATION)/usr/lib";
 				"INSTALL_PATH[sdk=*]" = "$(INSTALL_PATH_PREFIX)$(INSTALL_LOCATION)/usr/local/lib";
 				"INSTALL_PATH[sdk=macosx*]" = "$(INSTALL_PATH_PREFIX)$(INSTALL_LOCATION)/usr/lib";
-				MACH_O_TYPE = mh_bundle;
+				MACH_O_TYPE = mh_execute;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-stdlib=libc++",
 					"$(OTHER_CFLAGS)",
@@ -3508,6 +3512,7 @@
 					"-Wl,-exported_symbol,_dyld_shared_cache_extract_dylibs_progress",
 				);
 				PRODUCT_NAME = dsc_extractor;
+				SDKROOT = macosx;
 			};
 			name = Debug;
 		};
@@ -3525,7 +3530,7 @@
 				INSTALL_PATH = "$(INSTALL_PATH_PREFIX)$(INSTALL_LOCATION)/usr/lib";
 				"INSTALL_PATH[sdk=*]" = "$(INSTALL_PATH_PREFIX)$(INSTALL_LOCATION)/usr/local/lib";
 				"INSTALL_PATH[sdk=macosx*]" = "$(INSTALL_PATH_PREFIX)$(INSTALL_LOCATION)/usr/lib";
-				MACH_O_TYPE = mh_bundle;
+				MACH_O_TYPE = mh_execute;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-stdlib=libc++",
 					"$(OTHER_CFLAGS)",
@@ -3535,6 +3540,7 @@
 					"-Wl,-exported_symbol,_dyld_shared_cache_extract_dylibs_progress",
 				);
 				PRODUCT_NAME = dsc_extractor;
+				SDKROOT = macosx;
 				ZERO_LINK = NO;
 			};
 			name = Release;
