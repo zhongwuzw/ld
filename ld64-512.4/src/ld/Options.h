@@ -77,7 +77,8 @@ class Options
 public:
 	Options(int argc, const char* argv[]);
 	~Options();
-
+	
+	// kDynamicExecutable 应用主二进制
 	enum OutputKind { kDynamicExecutable, kStaticExecutable, kDynamicLibrary, kDynamicBundle, kObjectFile, kDyld, kPreload, kKextBundle };
 	enum NameSpace { kTwoLevelNameSpace, kFlatNameSpace, kForceFlatNameSpace };
 	// Standard treatment for many options.

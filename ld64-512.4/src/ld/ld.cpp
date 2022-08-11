@@ -21,6 +21,20 @@
  *
  * @APPLE_LICENSE_HEADER_END@
  */
+
+/*
+ __objc_nlclslist non lazy class list
+ All the classes implemented in a given image file have a reference in a list stored in the "__DATA, __objc_classlist, regular, no_dead_strip" binary's section. This list allows the runtime system to keep track of all the classes stored in such file. However, not all of the classes need to be realized when the program starts up. That's why when a class implements a +load method, it also has a reference in a list stored in the "__DATA, __objc_nlclslist, regular, no_dead_strip" section.
+ 
+ So, _getObjc2NonlazyClassList retrieves the list of classes that do implement a +load method and are so called non-lazy. _getObjc2ClassList retrieves a list of all the classes in a image file, including the classes that don't have a +load method (and are called lazy) and the non-lazy ones. Non-lazy classes must be realized when the program starts up. Lazy classes, on the other hand, don't need to be realized immediately. This may be delayed until the class receives a message for the first time, for example (that's the reason for them to be considered "lazy").
+ 
+ The same is true for categories, by the way.
+ 
+ --------------------------------------
+ 
+ __objc_methtype  All method encoded type like : @24@0:8  、 @"NSString"
+ 
+ */
  
 // start temp HACK for cross builds
 extern "C" double log2 ( double );
@@ -1354,8 +1368,8 @@ int main(int argc, const char* argv[])
 	
 		// do initial section sorting so passes have rough idea of the layout
 		state.sortSections();
-
-		// run passes
+		
+		// run passes 主原子图必须完全resolved才能进行pass
 		statistics.startPasses = mach_absolute_time();
 		ld::passes::objc::doPass(options, state);
 		ld::passes::stubs::doPass(options, state);

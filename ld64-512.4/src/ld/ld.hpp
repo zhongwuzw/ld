@@ -345,7 +345,8 @@ public:
 		const Ordinal nextLinkerOptionOrdinal() { return nextCounter(); };
 
 	};
-	
+	// Reloc .o文件
+	// Archive 静态库
 	typedef enum { Reloc, Dylib, Archive, Other } Type;
 	
 										File(const char* pth, time_t modTime, Ordinal ord, Type type)
@@ -544,6 +545,9 @@ namespace archive {
 class Section
 {
 public:
+	/*
+	 typeCode  代码section，里边都是所有方法的原子
+	 */
 	enum Type { typeUnclassified, typeCode, typePageZero, typeImportProxies, typeLinkEdit, typeMachHeader, typeStack,
 				typeLiteral4, typeLiteral8, typeLiteral16, typeConstants, typeTempLTO, typeTempAlias,
 				typeCString, typeNonStdCString, typeCStringPointer, typeUTF16Strings, typeCFString, typeObjC1Classes,
