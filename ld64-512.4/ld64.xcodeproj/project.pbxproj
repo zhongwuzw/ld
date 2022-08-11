@@ -1227,6 +1227,7 @@
 				OTHER_CPLUSPLUSFLAGS = (
 					"-stdlib=libc++",
 					"$(OTHER_CPLUSPLUSFLAGS)",
+					"-DZW_LD",
 				);
 				OTHER_LDFLAGS = (
 					"-stdlib=libc++",
@@ -1313,6 +1314,7 @@
 				OTHER_CPLUSPLUSFLAGS = (
 					"-stdlib=libc++",
 					"$(OTHER_CPLUSPLUSFLAGS)",
+					"-DZW_LD",
 				);
 				OTHER_LDFLAGS = (
 					"-stdlib=libc++",
@@ -1605,6 +1607,7 @@
 				OTHER_CPLUSPLUSFLAGS = (
 					"-stdlib=libc++",
 					"$(OTHER_CPLUSPLUSFLAGS)",
+					"-DZW_LD",
 				);
 				OTHER_LDFLAGS = (
 					"-stdlib=libc++",

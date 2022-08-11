@@ -515,6 +515,10 @@ bool SymbolTable::addByReferences(const ld::Atom& newAtom)
 
 bool SymbolTable::add(const ld::Atom& atom, Options::Treatment duplicates)
 {
+#ifdef ZW_LD
+	// When we use ld to force load static lib to dylib, may throw duplicate errors, so Let's disable error thrown directly.
+	duplicates = Options::kNULL;
+#endif
 	//fprintf(stderr, "SymbolTable::add(%p), name=%s\n", &atom, atom.name());
 	assert(atom.scope() != ld::Atom::scopeTranslationUnit);
 	switch ( atom.combine() ) {
