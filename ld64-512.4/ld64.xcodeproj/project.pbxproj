@@ -1228,6 +1228,7 @@
 					"-stdlib=libc++",
 					"$(OTHER_CPLUSPLUSFLAGS)",
 					"-DZW_LD",
+					"-DZW_LD_FIX_OSX",
 				);
 				OTHER_LDFLAGS = (
 					"-stdlib=libc++",
@@ -1315,6 +1316,7 @@
 					"-stdlib=libc++",
 					"$(OTHER_CPLUSPLUSFLAGS)",
 					"-DZW_LD",
+					"-DZW_LD_FIX_OSX",
 				);
 				OTHER_LDFLAGS = (
 					"-stdlib=libc++",
@@ -1608,6 +1610,7 @@
 					"-stdlib=libc++",
 					"$(OTHER_CPLUSPLUSFLAGS)",
 					"-DZW_LD",
+					"-DZW_LD_FIX_OSX",
 				);
 				OTHER_LDFLAGS = (
 					"-stdlib=libc++",

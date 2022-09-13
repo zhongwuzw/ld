@@ -257,7 +257,11 @@ void File<A>::init(tapi::LinkerInterfaceFile* file, const Options *opts, bool bu
 	} else
 #endif
 	{
+#if defined(ZW_LD) && defined(ZW_LD_FIX_OSX)
+		lcPlatforms = mapPlatform(tapi::Platform::OSX, useSimulatorVariant());
+#else
 		lcPlatforms = mapPlatform(file->getPlatform(), useSimulatorVariant());
+#endif
 	}
 	this->_platforms = lcPlatforms;
 
