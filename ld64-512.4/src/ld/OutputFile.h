@@ -246,6 +246,8 @@ private:
 	void						makeSplitSegInfoV2(ld::Internal& state);
 	void						writeMapFile(ld::Internal& state);
 	void						writeJSONEntry(ld::Internal& state);
+	void                        printModInitInfo(ld::Internal& state);
+	void                        enumerateFixups(const ld::Atom* atom, ld::Internal& state, const std::function<void(const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom)>& handler);
 	uint64_t					lookBackAddend(ld::Fixup::iterator fit);
 	bool						takesNoDiskSpace(const ld::Section* sect);
 	bool						hasZeroForFileOffset(const ld::Section* sect);

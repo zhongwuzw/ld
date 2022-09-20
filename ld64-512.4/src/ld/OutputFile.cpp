@@ -67,6 +67,7 @@
 #include "HeaderAndLoadCommands.hpp"
 #include "LinkEdit.hpp"
 #include "LinkEditClassic.hpp"
+#include "json.hpp"
 
 namespace ld {
 namespace tool {
@@ -170,6 +171,57 @@ void OutputFile::write(ld::Internal& state)
 	this->writeOutputFile(state);
 	this->writeMapFile(state);
 	this->writeJSONEntry(state);
+	this->printModInitInfo(state);
+}
+
+void OutputFile::enumerateFixups(const ld::Atom* atom, ld::Internal& state, const std::function<void(const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom)>& handler) {
+	if (atom == NULL) {
+		return;
+	}
+	for (ld::Fixup::iterator fit = atom->fixupsBegin(); fit != atom->fixupsEnd(); ++fit) {
+		const ld::Atom *targetAtom = nullptr;
+		std::shared_ptr<string> name = std::make_shared<string>(atom->name());
+		if (fit->binding == Fixup::bindingDirectlyBound) {
+			targetAtom = fit->u.target;
+			name.reset(new string(targetAtom->name()));
+		} else if (fit->binding == Fixup::bindingsIndirectlyBound) {
+			targetAtom = state.indirectBindingTable[fit->u.bindingIndex];
+			name.reset(new string(targetAtom->name()));
+		}
+		
+		if (targetAtom == NULL || handler == NULL) {
+			return;
+		}
+		
+		handler(std::move(name), targetAtom);
+	}
+}
+
+void OutputFile::printModInitInfo(ld::Internal& state)
+{
+	nlohmann::json modInitJson;
+	for (std::vector<ld::Internal::FinalSection*>::iterator sit = state.sections.begin(); sit != state.sections.end(); ++sit) {
+		ld::Internal::FinalSection* sect = *sit;
+		if (strcmp(sect->sectionName(), "__mod_init_func") == 0) {
+			for (std::vector<const ld::Atom*>::const_iterator it=sect->atoms.begin(); it != sect->atoms.end(); ++it) {
+				const ld::Atom* atom = *it;
+				enumerateFixups(atom, state, [&state, this, &modInitJson](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
+					const std::shared_ptr<std::string>& fileName = std::move(symbolName);
+
+					std::unordered_set<std::string> symbols = {};
+					enumerateFixups(targetAtom, state, [&state, &symbols, this](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
+						symbols.emplace(*symbolName.get());
+						enumerateFixups(targetAtom, state, [&symbols](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
+							symbols.emplace(*symbolName.get());
+						});
+					});
+					(modInitJson)[*fileName.get()] = symbols;
+				});
+			}
+		}
+	}
+	
+	std::cout << modInitJson.dump() << std::endl;
 }
 
 bool OutputFile::findSegment(ld::Internal& state, uint64_t addr, uint64_t* start, uint64_t* end, uint32_t* index)
