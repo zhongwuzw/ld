@@ -242,6 +242,7 @@
 
 /* Begin PBXFileReference section */
 		0E0268A426AABD5E00E22359 /* ld.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; path = ld.entitlements; sourceTree = "<group>"; };
+		0E7A664328D96DBD0009AABE /* json.hpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = json.hpp; sourceTree = "<group>"; };
 		83046A831C8FF23E00024A7E /* objcimageinfo */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = objcimageinfo; sourceTree = BUILT_PRODUCTS_DIR; };
 		83046A841C8FF2D000024A7E /* objcimageinfo.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = objcimageinfo.cpp; path = src/other/objcimageinfo.cpp; sourceTree = "<group>"; };
 		B028FCF01A9E7B4A00E3584B /* bitcode_bundle.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bitcode_bundle.h; sourceTree = "<group>"; };
@@ -398,9 +399,26 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		0E7A664128D96D9F0009AABE /* utils */ = {
+			isa = PBXGroup;
+			children = (
+				0E7A664228D96DB00009AABE /* json */,
+			);
+			path = utils;
+			sourceTree = "<group>";
+		};
+		0E7A664228D96DB00009AABE /* json */ = {
+			isa = PBXGroup;
+			children = (
+				0E7A664328D96DBD0009AABE /* json.hpp */,
+			);
+			path = json;
+			sourceTree = "<group>";
+		};
 		F9023C2C06D5A227001BBF46 = {
 			isa = PBXGroup;
 			children = (
+				0E7A664128D96D9F0009AABE /* utils */,
 				0E0268A426AABD5E00E22359 /* ld.entitlements */,
 				F9B813A80EC27B6300F94C13 /* abstraction */,
 				F9B813AD0EC27B8500F94C13 /* ld */,
@@ -800,7 +818,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/csh;
-			shellScript = "echo \"static const char *compile_stubs = \" > $DERIVED_FILE_DIR/compile_stubs.h\ncat compile_stubs | sed s/\\\"/\\\\\\\\\\\"/g | sed s/^/\\\"/ | sed s/\\$/\\\\\\\\n\\\"/ >> $DERIVED_FILE_DIR/compile_stubs.h\necho \";\" >> $DERIVED_FILE_DIR/compile_stubs.h";
+			shellScript = "echo \"static const char *compile_stubs = \" > $DERIVED_FILE_DIR/compile_stubs.h\ncat compile_stubs | sed s/\\\"/\\\\\\\\\\\"/g | sed s/^/\\\"/ | sed s/\\$/\\\\\\\\n\\\"/ >> $DERIVED_FILE_DIR/compile_stubs.h\necho \";\" >> $DERIVED_FILE_DIR/compile_stubs.h\n";
 			showEnvVarsInLog = 0;
 		};
 		F94E0A911CAC6B870092DC75 /* Add libtapi symlink */ = {
