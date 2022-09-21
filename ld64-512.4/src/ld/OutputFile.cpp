@@ -205,8 +205,9 @@ void OutputFile::printModInitInfo(ld::Internal& state)
 		if (strcmp(sect->sectionName(), "__mod_init_func") == 0) {
 			for (std::vector<const ld::Atom*>::const_iterator it=sect->atoms.begin(); it != sect->atoms.end(); ++it) {
 				const ld::Atom* atom = *it;
-				enumerateFixups(atom, state, [&state, this, &modInitJson](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
-					const std::shared_ptr<std::string>& fileName = std::move(symbolName);
+				enumerateFixups(atom, state, [&state, atom, this, &modInitJson](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
+					const char *path = atom->file()->path();
+					const std::shared_ptr<std::string>& refBlockName = std::move(symbolName);
 
 					std::unordered_set<std::string> symbols = {};
 					enumerateFixups(targetAtom, state, [&state, &symbols, this](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
@@ -215,13 +216,16 @@ void OutputFile::printModInitInfo(ld::Internal& state)
 							symbols.emplace(*symbolName.get());
 						});
 					});
-					(modInitJson)[*fileName.get()] = symbols;
+					(modInitJson)[path][*refBlockName.get()] = symbols;
 				});
 			}
 		}
 	}
 	
-	std::cout << modInitJson.dump() << std::endl;
+//	std::cout << modInitJson.dump() << std::endl;
+	
+	std::ofstream file("modInitCheck.json");
+	file << modInitJson << std::endl;
 }
 
 bool OutputFile::findSegment(ld::Internal& state, uint64_t addr, uint64_t* start, uint64_t* end, uint32_t* index)
