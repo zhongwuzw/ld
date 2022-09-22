@@ -206,7 +206,7 @@ void OutputFile::printModInitInfo(ld::Internal& state)
 			for (std::vector<const ld::Atom*>::const_iterator it=sect->atoms.begin(); it != sect->atoms.end(); ++it) {
 				const ld::Atom* atom = *it;
 				enumerateFixups(atom, state, [&state, atom, this, &modInitJson](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
-					const char *path = atom->file()->path();
+					const char *path = atom->safeFilePath();
 					const std::shared_ptr<std::string>& refBlockName = std::move(symbolName);
 
 					std::unordered_set<std::string> symbols = {};
