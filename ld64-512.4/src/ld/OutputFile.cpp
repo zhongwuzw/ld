@@ -181,18 +181,22 @@ void OutputFile::enumerateFixups(const ld::Atom* atom, ld::Internal& state, cons
 	for (ld::Fixup::iterator fit = atom->fixupsBegin(); fit != atom->fixupsEnd(); ++fit) {
 		const ld::Atom *targetAtom = nullptr;
 		std::shared_ptr<string> name = std::make_shared<string>(atom->name());
-		if (fit->binding == Fixup::bindingDirectlyBound) {
-			targetAtom = fit->u.target;
-			name.reset(new string(targetAtom->name()));
-		} else if (fit->binding == Fixup::bindingsIndirectlyBound) {
-			targetAtom = state.indirectBindingTable[fit->u.bindingIndex];
-			name.reset(new string(targetAtom->name()));
+		switch (fit->binding) {
+			case ld::Fixup::bindingDirectlyBound:
+				targetAtom = fit->u.target;
+				break;
+			case ld::Fixup::bindingsIndirectlyBound:
+				targetAtom = state.indirectBindingTable[fit->u.bindingIndex];
+				break;
+			default:
+				break;
 		}
 		
 		if (targetAtom == NULL || handler == NULL) {
 			return;
 		}
 		
+		name.reset(new string(targetAtom->name()));
 		handler(std::move(name), targetAtom);
 	}
 }
@@ -202,23 +206,23 @@ void OutputFile::printModInitInfo(ld::Internal& state)
 	nlohmann::json modInitJson;
 	for (std::vector<ld::Internal::FinalSection*>::iterator sit = state.sections.begin(); sit != state.sections.end(); ++sit) {
 		ld::Internal::FinalSection* sect = *sit;
-		if (strcmp(sect->sectionName(), "__mod_init_func") == 0) {
-			for (std::vector<const ld::Atom*>::const_iterator it=sect->atoms.begin(); it != sect->atoms.end(); ++it) {
-				const ld::Atom* atom = *it;
-				enumerateFixups(atom, state, [&state, atom, this, &modInitJson](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
-					const char *path = atom->safeFilePath();
-					const std::shared_ptr<std::string>& refBlockName = std::move(symbolName);
-
-					std::unordered_set<std::string> symbols = {};
-					enumerateFixups(targetAtom, state, [&state, &symbols, this](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
+		if ( sect->type() != ld::Section::typeInitializerPointers )
+			continue;
+		for (std::vector<const ld::Atom*>::const_iterator it=sect->atoms.begin(); it != sect->atoms.end(); ++it) {
+			const ld::Atom* atom = *it;
+			enumerateFixups(atom, state, [&state, atom, this, &modInitJson](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
+				const char *path = atom->safeFilePath();
+				const std::shared_ptr<std::string>& refBlockName = std::move(symbolName);
+				
+				std::unordered_set<std::string> symbols = {};
+				enumerateFixups(targetAtom, state, [&state, &symbols, this](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
+					symbols.emplace(*symbolName.get());
+					enumerateFixups(targetAtom, state, [&symbols](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
 						symbols.emplace(*symbolName.get());
-						enumerateFixups(targetAtom, state, [&symbols](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
-							symbols.emplace(*symbolName.get());
-						});
 					});
-					(modInitJson)[path][*refBlockName.get()] = symbols;
 				});
-			}
+				(modInitJson)[path][*refBlockName.get()] = symbols;
+			});
 		}
 	}
 	

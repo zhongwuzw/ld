@@ -1044,6 +1044,7 @@ class Atom
 {
 public:
 	enum Scope { scopeTranslationUnit, scopeLinkageUnit, scopeGlobal };
+	// definitionProxy: 引用的symbol若在动态库中，则创建proxy atom占位
 	enum Definition { definitionRegular, definitionTentative, definitionAbsolute, definitionProxy };
 	enum Combine { combineNever, combineByName, combineByNameAndContent, combineByNameAndReferences };
 	enum ContentType { typeUnclassified, typeZeroFill, typeCString, typeCFI, typeLSDA, typeSectionStart, 
