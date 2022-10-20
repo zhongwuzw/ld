@@ -2525,6 +2525,9 @@ void Options::parse(int argc, const char* argv[])
 				cannotBeUsedWithBitcode(arg);
 				warning("-lazy-l is deprecated, changing to regular link");
 			}
+			else if ( strcmp(arg, "-mod_init_check_file_path") == 0 ) {
+				fmodInitCheckFilePath = checkForNullArgument(arg, argv[++i]);
+			}
 			else if ( strcmp(arg, "-lto_library") == 0 ) {
                 snapshotFileArgIndex = 1;
 				fOverridePathlibLTO = argv[++i];

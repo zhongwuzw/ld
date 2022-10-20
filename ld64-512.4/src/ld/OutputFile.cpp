@@ -227,8 +227,12 @@ void OutputFile::printModInitInfo(ld::Internal& state)
 	}
 	
 //	std::cout << modInitJson.dump() << std::endl;
-	
-	std::ofstream file("modInitCheck.json");
+	std::string filePath;
+	if (_options.modInitCheckFilePath()) {
+		filePath = _options.modInitCheckFilePath();
+	}
+	filePath += "modInitCheck.json";
+	std::ofstream file(filePath);
 	file << modInitJson << std::endl;
 }
 

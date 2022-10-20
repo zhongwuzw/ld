@@ -259,6 +259,7 @@ public:
 	
 	typedef const char* const*	UndefinesIterator;
 
+	const char*                 modInitCheckFilePath() const { return fmodInitCheckFilePath; }
 //	const ObjectFile::ReaderOptions&	readerOptions();
 	const char*							outputFilePath() const { return fOutputFile; }
 	const std::vector<FileInfo>&		getInputFiles() const { return fInputFiles; }
@@ -606,7 +607,7 @@ private:
 	void						loadImplictZipperFile(const char *path,std::vector<const char*>& paths);
 	void 						inferArchAndPlatform();
 
-
+	const char*                         fmodInitCheckFilePath;
 //	ObjectFile::ReaderOptions			fReaderOptions;
 	const char*							fOutputFile;
 	std::vector<Options::FileInfo>		fInputFiles;
