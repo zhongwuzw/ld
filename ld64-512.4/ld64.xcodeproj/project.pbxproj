@@ -1386,6 +1386,10 @@
 					"$(DT_TOOLCHAIN_DIR)/usr/local/include",
 					"$(TOOLCHAIN_DIR)/usr/local/include",
 					"$(SRCROOT)/src/ld",
+					"$(SRCROOT)/../dyld-733.6/include",
+					"$(SRCROOT)/../tapi-1100.0.11/include",
+					"$(SRCROOT)/../llvm-8.0.1.src/include",
+					"$(SRCROOT)/../cfe-8.0.1.src/include",
 				);
 				INSTALL_PATH = "$(DT_VARIANT)/$(TOOLCHAIN_INSTALL_DIR)/usr/local/bin";
 				ONLY_ACTIVE_ARCH = NO;
@@ -1397,7 +1401,7 @@
 				OTHER_REZFLAGS = "";
 				PREBINDING = NO;
 				PRODUCT_NAME = ObjectDump;
-				SDKROOT = macosx.internal;
+				SDKROOT = macosx;
 				SECTORDER_FLAGS = "";
 				WARNING_CFLAGS = (
 					"-Wmost",
@@ -1422,6 +1426,10 @@
 					"$(DT_TOOLCHAIN_DIR)/usr/local/include",
 					"$(TOOLCHAIN_DIR)/usr/local/include",
 					"$(SRCROOT)/src/ld",
+					"$(SRCROOT)/../dyld-733.6/include",
+					"$(SRCROOT)/../tapi-1100.0.11/include",
+					"$(SRCROOT)/../llvm-8.0.1.src/include",
+					"$(SRCROOT)/../cfe-8.0.1.src/include",
 				);
 				INSTALL_PATH = "$(DT_VARIANT)/$(TOOLCHAIN_INSTALL_DIR)/usr/local/bin";
 				OTHER_CPLUSPLUSFLAGS = (
@@ -1432,7 +1440,7 @@
 				OTHER_REZFLAGS = "";
 				PREBINDING = NO;
 				PRODUCT_NAME = ObjectDump;
-				SDKROOT = macosx.internal;
+				SDKROOT = macosx;
 				WARNING_CFLAGS = (
 					"-Wmost",
 					"-Wno-four-char-constants",
@@ -1700,6 +1708,10 @@
 					"$(DT_TOOLCHAIN_DIR)/usr/local/include",
 					"$(TOOLCHAIN_DIR)/usr/local/include",
 					"$(SRCROOT)/src/ld",
+					"$(SRCROOT)/../dyld-733.6/include",
+					"$(SRCROOT)/../tapi-1100.0.11/include",
+					"$(SRCROOT)/../llvm-8.0.1.src/include",
+					"$(SRCROOT)/../cfe-8.0.1.src/include",
 				);
 				INSTALL_PATH = "$(DT_VARIANT)/$(TOOLCHAIN_INSTALL_DIR)/usr/local/bin";
 				OTHER_CPLUSPLUSFLAGS = (
@@ -1710,7 +1722,7 @@
 				OTHER_REZFLAGS = "";
 				PREBINDING = NO;
 				PRODUCT_NAME = ObjectDump;
-				SDKROOT = macosx.internal;
+				SDKROOT = macosx;
 				WARNING_CFLAGS = (
 					"-Wmost",
 					"-Wno-four-char-constants",
@@ -1973,6 +1985,7 @@
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GCC_MODEL_TUNING = G5;
 				GCC_OPTIMIZATION_LEVEL = 0;
+				HEADER_SEARCH_PATHS = "";
 				INSTALL_PATH = "$(DT_VARIANT)/$(TOOLCHAIN_INSTALL_DIR)/usr/local/bin";
 				OTHER_CPLUSPLUSFLAGS = (
 					"-stdlib=libc++",
