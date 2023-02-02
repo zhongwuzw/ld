@@ -211,8 +211,12 @@ void OutputFile::printModInitInfo(ld::Internal& state)
 		for (std::vector<const ld::Atom*>::const_iterator it=sect->atoms.begin(); it != sect->atoms.end(); ++it) {
 			const ld::Atom* atom = *it;
 			enumerateFixups(atom, state, [&state, atom, this, &modInitJson](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
-				const char *path = atom->safeFilePath();
+				std::string filePath = atom->safeFilePath();
 				const std::shared_ptr<std::string>& refBlockName = std::move(symbolName);
+				
+				auto const pos = filePath.find_last_of('(');
+				auto fileName = filePath.substr(pos + 1);
+				fileName.erase(std::remove(fileName.begin(), fileName.end(), ')'), fileName.end());
 				
 				std::unordered_set<std::string> symbols = {};
 				enumerateFixups(targetAtom, state, [&state, &symbols, this](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
@@ -221,7 +225,7 @@ void OutputFile::printModInitInfo(ld::Internal& state)
 						symbols.emplace(*symbolName.get());
 					});
 				});
-				(modInitJson)[path][*refBlockName.get()] = symbols;
+				(modInitJson)[fileName][*refBlockName.get()] = symbols;
 			});
 		}
 	}
