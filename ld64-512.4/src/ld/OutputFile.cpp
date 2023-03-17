@@ -196,7 +196,32 @@ void OutputFile::enumerateFixups(const ld::Atom* atom, ld::Internal& state, cons
 			return;
 		}
 		
-		name.reset(new string(targetAtom->name()));
+		if (targetAtom->contentType() == ld::Atom::typeCString) {
+			name.reset(new string((char*)targetAtom->rawContentPointer()));
+		} else if (targetAtom->section().type() == ld::Section::typeCStringPointer) {
+			for (ld::Fixup::iterator fit = targetAtom->fixupsBegin(); fit != targetAtom->fixupsEnd(); ++fit) {
+				if ( fit->binding == ld::Fixup::bindingByContentBound ) {
+					const ld::Atom* cstringAtom = fit->u.target;
+					name.reset(new string((char*)cstringAtom->rawContentPointer()));
+				} else if (fit->binding == ld::Fixup::bindingsIndirectlyBound) {
+					const ld::Atom* objCStringAtom = state.indirectBindingTable[fit->u.bindingIndex];
+					name.reset(new string((char*)objCStringAtom->rawContentPointer()));
+				}
+			}
+		} else if (targetAtom->section().type() == ld::Section::typeObjCClassRefs) {
+			for (ld::Fixup::iterator fit = targetAtom->fixupsBegin(); fit != targetAtom->fixupsEnd(); ++fit) {
+				if ( fit->binding == ld::Fixup::bindingByContentBound ) {
+					const ld::Atom* objcClassRefAtom = fit->u.target;
+					name.reset(new string(objcClassRefAtom->name()));
+				} else if (fit->binding == ld::Fixup::bindingsIndirectlyBound) {
+					const ld::Atom* objcClassRefAtom = state.indirectBindingTable[fit->u.bindingIndex];
+					name.reset(new string(objcClassRefAtom->name()));
+				}
+			}
+		} else {
+			name.reset(new string(targetAtom->name()));
+		}
+		
 		handler(std::move(name), targetAtom);
 	}
 }
