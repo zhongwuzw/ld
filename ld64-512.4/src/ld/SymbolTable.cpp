@@ -314,7 +314,7 @@ private:
 		switch ( _options.commonsMode() ) {
 			case Options::kCommonsIgnoreDylibs:
 				if ( _options.warnCommons() )
-					warning("using common symbol %s from %s and ignoring defintion from dylib %s",
+					warning("using common symbol %s from %s and ignoring definition from dylib %s",
 							proxy.name(), proxy.safeFilePath(), dylib.safeFilePath());
 				pickAtom(dylib);
 				break;
@@ -325,7 +325,7 @@ private:
 				pickAtom(proxy);
 				break;
 			case Options::kCommonsConflictsDylibsError:
-				throwf("common symbol %s from %s conflicts with defintion from dylib %s",
+				throwf("common symbol %s from %s conflicts with definition from dylib %s",
 					   proxy.name(), proxy.safeFilePath(), dylib.safeFilePath());
 		}
 	}
@@ -515,10 +515,6 @@ bool SymbolTable::addByReferences(const ld::Atom& newAtom)
 
 bool SymbolTable::add(const ld::Atom& atom, Options::Treatment duplicates)
 {
-#ifdef ZW_LD
-	// When we use ld to force load static lib to dylib, may throw duplicate errors, so Let's disable error thrown directly.
-	duplicates = Options::kNULL;
-#endif
 	//fprintf(stderr, "SymbolTable::add(%p), name=%s\n", &atom, atom.name());
 	assert(atom.scope() != ld::Atom::scopeTranslationUnit);
 	switch ( atom.combine() ) {
@@ -540,7 +536,7 @@ bool SymbolTable::add(const ld::Atom& atom, Options::Treatment duplicates)
 void SymbolTable::markCoalescedAway(const ld::Atom* atom)
 {
 	// remove this from list of all atoms used
-	//fprintf(stderr, "markCoalescedAway(%p) from %s\n", atom, atom->safeFilePath());
+	//fprintf(stderr, "markCoalescedAway(%p) %s from %s\n", atom, atom->name(), atom->safeFilePath());
 	(const_cast<ld::Atom*>(atom))->setCoalescedAway();
 	
 	//
@@ -555,7 +551,7 @@ void SymbolTable::markCoalescedAway(const ld::Atom* atom)
 			case ld::Fixup::kindNoneGroupSubordinateFDE:
 			case ld::Fixup::kindNoneGroupSubordinateLSDA:
 				assert(fit->binding == ld::Fixup::bindingDirectlyBound);
-				this->markCoalescedAway(fit->u.target);
+				markCoalescedAway(fit->u.target);
 				break;
 			default:
 				break;
@@ -928,6 +924,13 @@ void SymbolTable::removeDeadUndefs(std::vector<const ld::Atom*>& allAtoms, const
 				_byNameReverseTable.erase(slot);
 				_byNameTable.erase(name);
 				allAtoms.erase(std::remove(allAtoms.begin(), allAtoms.end(), atom), allAtoms.end());
+			}
+			else if ( atom == nullptr ) {
+				if ( const char* undefName = _byNameReverseTable[slot] ) {
+					// <rdar://problem/55544746> Remove unused undef symbols from symbol table after LTO before doing final resolve
+					_byNameReverseTable.erase(slot);
+					_byNameTable.erase(undefName);
+				}
 			}
 		}
 	}

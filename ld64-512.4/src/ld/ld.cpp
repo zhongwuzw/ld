@@ -21,20 +21,6 @@
  *
  * @APPLE_LICENSE_HEADER_END@
  */
-
-/*
- __objc_nlclslist non lazy class list
- All the classes implemented in a given image file have a reference in a list stored in the "__DATA, __objc_classlist, regular, no_dead_strip" binary's section. This list allows the runtime system to keep track of all the classes stored in such file. However, not all of the classes need to be realized when the program starts up. That's why when a class implements a +load method, it also has a reference in a list stored in the "__DATA, __objc_nlclslist, regular, no_dead_strip" section.
- 
- So, _getObjc2NonlazyClassList retrieves the list of classes that do implement a +load method and are so called non-lazy. _getObjc2ClassList retrieves a list of all the classes in a image file, including the classes that don't have a +load method (and are called lazy) and the non-lazy ones. Non-lazy classes must be realized when the program starts up. Lazy classes, on the other hand, don't need to be realized immediately. This may be delayed until the class receives a message for the first time, for example (that's the reason for them to be considered "lazy").
- 
- The same is true for categories, by the way.
- 
- --------------------------------------
- 
- __objc_methtype  All method encoded type like : @24@0:8  、 @"NSString"
- 
- */
  
 // start temp HACK for cross builds
 extern "C" double log2 ( double );
@@ -94,6 +80,7 @@ extern "C" double log2 ( double );
 #include "passes/thread_starts.h"
 #include "passes/branch_shim.h"
 #include "passes/objc.h"
+#include "passes/objc_constants.h"
 #include "passes/dylibs.h"
 #include "passes/bitcode_bundle.h"
 #include "passes/code_dedup.h"
@@ -136,8 +123,9 @@ public:
 
 	virtual									~InternalState() {}
 private:
-	bool									inMoveRWChain(const ld::Atom& atom, const char* filePath, const char*& dstSeg, bool& wildCardMatch);
+	bool									inMoveRWChain(const ld::Atom& atom, const char* filePath, bool followedBackBranch, const char*& dstSeg, bool& wildCardMatch);
 	bool									inMoveROChain(const ld::Atom& atom, const char* filePath, const char*& dstSeg, bool& wildCardMatch);
+	bool									inMoveAuthChain(const ld::Atom& atom, bool followedBackBranch, const char*& dstSeg);
 
 	class FinalSection : public ld::Internal::FinalSection 
 	{
@@ -359,7 +347,7 @@ uint32_t InternalState::FinalSection::sectionOrder(const ld::Section& sect, uint
 	if ( sect.type() == ld::Section::typeLastSection )
 		return INT_MAX;
 	const std::vector<const char*>* sectionList = options.sectionOrder(sect.segmentName());
-	if ( ((options.outputKind() == Options::kPreload) || (options.outputKind() == Options::kDyld)) && (sectionList != NULL) ) {
+	if ( ((options.outputKind() == Options::kPreload) || (options.outputKind() == Options::kDyld) || options.isKernel()) && (sectionList != NULL) ) {
 		uint32_t count = 10;
 		for (std::vector<const char*>::const_iterator it=sectionList->begin(); it != sectionList->end(); ++it, ++count) {
 			if ( strcmp(*it, sect.sectionName()) == 0 ) 
@@ -403,6 +391,8 @@ uint32_t InternalState::FinalSection::sectionOrder(const ld::Section& sect, uint
 				}
 				return sectionsSeen+20;
 			default:
+				if ( (strcmp(sect.sectionName(), "__objc_methlist") == 0) )
+					return 15;
 				return sectionsSeen+20;
 		}
 	}
@@ -473,6 +463,14 @@ uint32_t InternalState::FinalSection::sectionOrder(const ld::Section& sect, uint
 				else
 					return sectionsSeen+40;
 		}
+	}
+	else if ( strcmp(sect.segmentName(), "__OBJC_CONST") == 0 ) {
+		// First emit the sections we want the shared cache builder to keep in order
+		if ( strcmp(sect.sectionName(), "__objc_class_ro") == 0 )
+			return 10;
+		if ( strcmp(sect.sectionName(), "__cfstring") == 0 )
+			return 11;
+		return sectionsSeen+10;
 	}
 	// make sure zerofill in any other section is at end of segment
 	if ( sect.type() == ld::Section::typeZeroFill )
@@ -595,7 +593,14 @@ bool InternalState::hasReferenceToWeakExternal(const ld::Atom& atom)
 	return false;
 }
 
-bool InternalState::inMoveRWChain(const ld::Atom& atom, const char* filePath, const char*& dstSeg, bool& wildCardMatch)
+
+// .o files without .subsections_via_symbols have all atoms in a section chained together with kindNoneFollowOn
+// If any symbol in section is moved to another segment/section, all the atoms in that section need to be moved too.
+// But we don't have a good way to find the start atom, so we just move all atoms started with the choosen one.
+//
+// For Swift classes, there are two alt_entry symbols in the class structure. If the main symbol or either alt_entry
+// is moved, then all the atoms in that chain need to move. We find the start atom via the kindNoneGroupSubordinate.
+bool InternalState::inMoveRWChain(const ld::Atom& atom, const char* filePath, bool followedBackBranch, const char*& dstSeg, bool& wildCardMatch)
 {
 	if ( !_options.hasDataSymbolMoves() )
 		return false;
@@ -605,17 +610,20 @@ bool InternalState::inMoveRWChain(const ld::Atom& atom, const char* filePath, co
 		dstSeg = pos->second;
 		return true;
 	}
-
+	
 	bool result = false;
-	if ( _options.moveRwSymbol(atom.name(), filePath, dstSeg, wildCardMatch) )
+	if ( _options.moveRwSymbol(atom.getUserVisibleName(), filePath, dstSeg, wildCardMatch) )
 		result = true;
 
 	for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
-		if ( fit->kind == ld::Fixup::kindNoneFollowOn ) {
-			if ( fit->binding == ld::Fixup::bindingDirectlyBound ) {
-				if ( inMoveRWChain(*(fit->u.target), filePath, dstSeg, wildCardMatch) )
-					result = true;
-			}
+		if ( (fit->kind == ld::Fixup::kindNoneFollowOn) && (fit->binding == ld::Fixup::bindingDirectlyBound) ) {
+			if ( inMoveRWChain(*(fit->u.target), filePath, followedBackBranch, dstSeg, wildCardMatch) )
+				result = true;
+		}
+		else if ( !followedBackBranch && (fit->kind == ld::Fixup::kindNoneGroupSubordinate) && (fit->binding == ld::Fixup::bindingDirectlyBound) ) {
+			// don't recurse forever.  Only recurse if we have not already followed a backbranch (kindNoneGroupSubordinate)
+			if ( inMoveRWChain(*(fit->u.target), filePath, true, dstSeg, wildCardMatch) )
+				result = true;
 		}
 	}
 
@@ -645,7 +653,7 @@ bool InternalState::inMoveROChain(const ld::Atom& atom, const char* filePath, co
 	}
 
 	bool result = false;
-	if ( _options.moveRoSymbol(atom.name(), filePath, dstSeg, wildCardMatch) )
+	if ( _options.moveRoSymbol(atom.getUserVisibleName(), filePath, dstSeg, wildCardMatch) )
 		result = true;
 
 	for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
@@ -671,6 +679,67 @@ bool InternalState::inMoveROChain(const ld::Atom& atom, const char* filePath, co
 }
 
 
+// .o files without .subsections_via_symbols have all atoms in a section chained together with kindNoneFollowOn
+// If any symbol in section is moved to another segment/section, all the atoms in that section need to be moved too.
+// But we don't have a good way to find the start atom, so we just move all atoms started with the choosen one.
+//
+// For Swift classes, there are two alt_entry symbols in the class structure. If the main symbol or either alt_entry
+// is moved, then all the atoms in that chain need to move. We find the start atom via the kindNoneGroupSubordinate.
+#if SUPPORT_ARCH_arm64e
+bool InternalState::inMoveAuthChain(const ld::Atom& atom, bool followedBackBranch, const char*& dstSeg)
+{
+	if ( !_options.useAuthDataSegment() )
+		return false;
+
+	auto pos = _pendingSegMove.find(&atom);
+	if ( pos != _pendingSegMove.end() ) {
+		dstSeg = pos->second;
+		return true;
+	}
+
+	auto hasAuthenticatedFixups = [](const ld::Atom& atom) -> bool {
+		for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
+			switch (fit->kind) {
+				case ld::Fixup::kindStoreLittleEndianAuth64:
+				case ld::Fixup::kindStoreTargetAddressLittleEndianAuth64:
+				case ld::Fixup::kindSetAuthData:
+					return true;
+				default:
+					break;
+			}
+		}
+		return false;
+	};
+
+	bool result = hasAuthenticatedFixups(atom);
+
+	for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
+		if ( (fit->kind == ld::Fixup::kindNoneFollowOn) && (fit->binding == ld::Fixup::bindingDirectlyBound) ) {
+			if ( inMoveAuthChain(*(fit->u.target), followedBackBranch, dstSeg) )
+				result = true;
+		}
+		else if ( !followedBackBranch && (fit->kind == ld::Fixup::kindNoneGroupSubordinate) && (fit->binding == ld::Fixup::bindingDirectlyBound) ) {
+			// don't recurse forever.  Only recurse if we have not already followed a backbranch (kindNoneGroupSubordinate)
+			if ( inMoveAuthChain(*(fit->u.target), true, dstSeg) )
+				result = true;
+		}
+	}
+
+	if ( result ) {
+		for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
+			if ( fit->kind == ld::Fixup::kindNoneFollowOn ) {
+				if ( fit->binding == ld::Fixup::bindingDirectlyBound ) {
+					_pendingSegMove[fit->u.target] = dstSeg;
+				}
+			}
+		}
+	}
+
+	return result;
+}
+#endif
+
+
 
 
 ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
@@ -683,18 +752,19 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 	const ld::File* f = atom.file();
 	const char* path = (f != NULL) ? f->path() : NULL;
 	if ( atom.section().type() == ld::Section::typeTentativeDefs ) {
-		// tentative defintions don't have a real section name yet
+		// tentative definitions don't have a real section name yet
 		sectType = ld::Section::typeZeroFill;
 		if ( _options.mergeZeroFill() )
 			curSectName = FinalSection::_s_DATA_zerofill.sectionName();
 		else
 			curSectName = FinalSection::_s_DATA_common.sectionName();
 	}
+
 	// Support for -move_to_r._segment
 	if ( atom.symbolTableInclusion() == ld::Atom::symbolTableIn ) {
 		const char* dstSeg;
 		bool wildCardMatch;
-		if ( inMoveRWChain(atom, path, dstSeg, wildCardMatch) ) {
+		if ( inMoveRWChain(atom, path, false, dstSeg, wildCardMatch) ) {
 			if ( (sectType != ld::Section::typeZeroFill) 
 			  && (sectType != ld::Section::typeUnclassified) 
 			  && (sectType != ld::Section::typeTentativeDefs)
@@ -709,6 +779,40 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 					printf("symbol '%s', -move_to_rw_segment mapped it to %s/%s\n", atom.name(), curSegName, curSectName);
 				fs = this->getFinalSection(curSegName, curSectName, sectType);
 			}
+		}
+		else {
+			const char* symName = atom.name();
+			if ( strncmp(symName, "__OBJC_$_INSTANCE_METHODS_", 26) == 0 ) {
+				if ( _options.moveAXMethodList(&symName[26]) ) {
+					curSectName  = "__objc_const_ax";
+					fs = this->getFinalSection(curSegName, curSectName, sectType);
+					if ( _options.traceSymbolLayout() )
+						printf("symbol '%s', .axsymbol mapped it to %s/%s\n", atom.name(), curSegName, curSectName);
+				}
+			}
+			else if ( strncmp(symName, "__OBJC_$_CLASS_METHODS_", 23) == 0 ) {
+				if ( _options.moveAXMethodList(&symName[23]) ) {
+					curSectName  = "__objc_const_ax";
+					fs = this->getFinalSection(curSegName, curSectName, sectType);
+					if ( _options.traceSymbolLayout() )
+						printf("symbol '%s', .axsymbol mapped it to %s/%s\n", atom.name(), curSegName, curSectName);
+				}
+			}
+#if SUPPORT_ARCH_arm64e
+			else if ( (strncmp(symName, "__OBJC_CLASS_RO_", 16) == 0) || (strncmp(symName, "__OBJC_METACLASS_RO_", 20) == 0) ) {
+				// The shared cache knows how to strip authenticated pointers from these atoms.
+				// Move them to __OBJC_CONST to make it easier to optimize them.
+				// Note the magic 72 here is the size of an objc class_ro_t.
+				// Swift has a larger class_ro_t which we don't know if we can optimize
+				if ( (atom.size() == 72) && _options.supportsAuthenticatedPointers() && _options.sharedRegionEligible() ) {
+					curSegName = "__OBJC_CONST";
+					curSectName  = "__objc_class_ro";
+					fs = this->getFinalSection(curSegName, curSectName, sectType);
+					if ( _options.traceSymbolLayout() )
+						printf("symbol '%s', class_ro_t mapped it to %s/%s\n", atom.name(), curSegName, curSectName);
+				}
+			}
+#endif
 		}
 		if ( (fs == NULL) && inMoveROChain(atom, path, dstSeg, wildCardMatch) ) {
 			if ( (sectType != ld::Section::typeCode)
@@ -750,21 +854,52 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 			if ( _options.useDataConstSegment() && _options.sharedRegionEligible() && (strcmp(curSectName, "__const") == 0) && (strcmp(curSegName, "__DATA") == 0) && hasReferenceToWeakExternal(atom) ) {
 				// if __DATA,__const atom has pointer to weak external symbol, don't move to __DATA_CONST
 				curSectName = "__const_weak";
+
+#if SUPPORT_ARCH_arm64e
+				// We may want __AUTH, but double check there isn't a chain already
+				// for this atom which will force it in a different segment
+				curSegName = "__AUTH";
+				if ( !inMoveAuthChain(atom, false, curSegName) )
+					curSegName = "__DATA";
+#endif
+
 				fs = this->getFinalSection(curSegName, curSectName, sectType);
 				if ( _options.traceSymbolLayout() )
-					printf("symbol '%s', contains pointers to weak symbols, so mapped it to __DATA/__const_weak\n", atom.name());
+					printf("symbol '%s', contains pointers to weak symbols, so mapped it to %s/__const_weak\n", atom.name(), curSegName);
 			}
 			else if ( _options.useDataConstSegment() && _options.sharedRegionEligible() && (sectType == ld::Section::typeNonLazyPointer) && hasReferenceToWeakExternal(atom) ) {
 				// if __DATA,__nl_symbol_ptr atom has pointer to weak external symbol, don't move to __DATA_CONST
 				curSectName = "__got_weak";
-				fs = this->getFinalSection("__DATA", curSectName, sectType);
+
+				curSegName = "__DATA";
+#if SUPPORT_ARCH_arm64e
+				// We may want __AUTH, but double check there isn't a chain already
+				// for this atom which will force it in a different segment
+				curSegName = "__AUTH";
+				if ( !inMoveAuthChain(atom, false, curSegName) )
+					curSegName = "__DATA";
+#endif
+
+				fs = this->getFinalSection(curSegName, curSectName, sectType);
 				if ( _options.traceSymbolLayout() )
-					printf("symbol '%s', contains pointers to weak symbols, so mapped it to __DATA/__got_weak\n", atom.name());
+					printf("symbol '%s', contains pointers to weak symbols, so mapped it to %s/__got_weak\n", atom.name(), curSegName);
 			}
 			else {
 				curSegName = rename.toSegment;
 				curSectName = rename.toSection;
-				fs = this->getFinalSection(rename.toSegment, rename.toSection, sectType);
+
+#if SUPPORT_ARCH_arm64e
+				// Actually move to __AUTH_CONST if we are const and authenticated
+				if ( !strcmp(curSegName, "__DATA_CONST") ) {
+					// We may want __AUTH_CONST, but double check there isn't a chain already
+					// for this atom which will force it in a different segment
+					curSegName = "__AUTH_CONST";
+					if ( !inMoveAuthChain(atom, false, curSegName) )
+						curSegName = "__DATA_CONST";
+				}
+#endif
+
+				fs = this->getFinalSection(curSegName, rename.toSection, sectType);
 				if ( _options.traceSymbolLayout() )
 					printf("symbol '%s', -rename_section mapped it to %s/%s\n", atom.name(), fs->segmentName(), fs->sectionName());
 			}
@@ -777,6 +912,22 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 			fs = this->getFinalSection(rename.toSegment, curSectName, sectType);
 		}
 	}
+
+#if SUPPORT_ARCH_arm64e
+	if ( fs == NULL ) {
+		// Actually move to __AUTH if we are authenticated
+		if ( !strcmp(curSegName, "__DATA") ) {
+			// We may want __AUTH, but double check there isn't a chain already
+			// for this atom which will force it in a different segment
+			curSegName = "__AUTH";
+			if ( inMoveAuthChain(atom, false, curSegName) ) {
+				fs = this->getFinalSection(curSegName, curSectName, sectType);
+				if ( _options.traceSymbolLayout() && (atom.symbolTableInclusion() == ld::Atom::symbolTableIn) )
+					printf("symbol '%s', contains authenticated pointers, so mapped it to __AUTH/%s\n", atom.name(), fs->sectionName());
+			}
+		}
+	}
+#endif
 
 	// if no override, use default location
 	if ( fs == NULL ) {
@@ -844,6 +995,17 @@ ld::Internal::FinalSection* InternalState::getFinalSection(const ld::Section& in
 			{
 				// coalesce some sections
 				const ld::Section& outSect = FinalSection::outputSection(inputSection, _options.mergeZeroFill());
+				if ( _options.mergeZeroFill() && (inputSection.type() == ld::Section::typeZeroFill) && (strcmp(inputSection.segmentName(), "__DATA") != 0) ) {
+					// have custom segment with zero-fill, so need custom section, see if we already have one
+					for (const auto& entry : _sectionInToFinalMap) {
+						ld::Internal::FinalSection* anOut = entry.second;
+						if ( (strcmp(anOut->segmentName(), inputSection.segmentName()) == 0) && (strcmp(anOut->sectionName(), "__zerofill") == 0) )
+							return anOut;
+					}
+					// need to create custom section
+					baseForFinalSection = new ld::Section(inputSection.segmentName(), "__zerofill", ld::Section::typeZeroFill);
+					break;
+				}
 				pos = _sectionInToFinalMap.find(&outSect);
 				if ( pos != _sectionInToFinalMap.end() ) {
 					_sectionInToFinalMap[&inputSection] = pos->second;
@@ -1006,8 +1168,13 @@ void InternalState::setSectionSizesAndAlignments()
 			// section alignment is that of a contained atom with the greatest alignment
 			sect->alignment = maxAlignment;
 			// unless -sectalign command line option overrides
-			if  ( _options.hasCustomSectionAlignment(sect->segmentName(), sect->sectionName()) )
+			if  ( _options.hasCustomSectionAlignment(sect->segmentName(), sect->sectionName()) ) {
 				sect->alignment = _options.customSectionAlignment(sect->segmentName(), sect->sectionName());
+				if ( maxAlignment > sect->alignment ) {
+					warning("-sectalign is reducing the alignment of %s,%s from 2^%u to 2^%u",
+								sect->segmentName(), sect->sectionName(), maxAlignment, sect->alignment);
+				}
+			}
 			// each atom in __eh_frame has zero alignment to assure they pack together,
 			// but compilers usually make the CFIs pointer sized, so we want whole section
 			// to start on pointer sized boundary.
@@ -1368,14 +1535,15 @@ int main(int argc, const char* argv[])
 	
 		// do initial section sorting so passes have rough idea of the layout
 		state.sortSections();
-		
-		// run passes 主原子图必须完全resolved才能进行pass
+
+		// run passes
 		statistics.startPasses = mach_absolute_time();
 		ld::passes::objc::doPass(options, state);
 		ld::passes::stubs::doPass(options, state);
 		ld::passes::inits::doPass(options, state);
 		ld::passes::huge::doPass(options, state);
 		ld::passes::got::doPass(options, state);
+		//ld::passes::objc_constants::doPass(options, state);
 		ld::passes::tlvp::doPass(options, state);
 		ld::passes::dylibs::doPass(options, state);	// must be after stubs and GOT passes
 		ld::passes::order::doPass(options, state);
@@ -1398,7 +1566,7 @@ int main(int argc, const char* argv[])
 
 		// write output file
 		statistics.startOutput = mach_absolute_time();
-		ld::tool::OutputFile out(options);
+		ld::tool::OutputFile out(options, state);
 		out.write(state);
 		statistics.startDone = mach_absolute_time();
 		
@@ -1429,6 +1597,12 @@ int main(int argc, const char* argv[])
 			fprintf(stderr, "ld: fatal warning(s) induced error (-fatal_warnings)\n");
 			return 1;
 		}
+		// <rdar://problem/61228255> need to flush stdout since we skipping some clean up in calling _exit()
+		fflush(stdout);
+
+		// <rdar://problem/55031993> don't run terminators until all we can guarantee all threads are stopped
+		// <rdar://problem/56200095> don't run C++ destructors of stack objects to gain 5% linking perf win
+		_exit(0);
 	}
 	catch (const char* msg) {
 		if ( strstr(msg, "malformed") != NULL )
@@ -1437,10 +1611,9 @@ int main(int argc, const char* argv[])
 			fprintf(stderr, "ld: %s for architecture %s\n", msg, archName);
 		else
 			fprintf(stderr, "ld: %s\n", msg);
-		return 1;
+		// <rdar://50510752> exit but don't run termination routines
+		_exit(1);
 	}
-
-	return 0;
 }
 
 
@@ -1474,7 +1647,7 @@ void __assert_rtn(const char* func, const char* file, int line, const char* fail
 	}
     fprintf(stderr, "A linker snapshot was created at:\n\t%s\n", snapshot->rootDir());
 	fprintf(stderr, "ld: Assertion failed: (%s), function %s, file %s, line %d.\n", failedexpr, func, file, line);
-	exit(1);
+	_exit(1);
 }
 #endif
 

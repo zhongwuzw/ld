@@ -68,8 +68,8 @@
 #ifndef MH_SIM_SUPPORT
 	#define MH_SIM_SUPPORT 0x08000000
 #endif
-#ifndef PLATFORM_IOSMAC
-	#define PLATFORM_IOSMAC 6
+#ifndef PLATFORM_MACCATALYST
+	#define PLATFORM_MACCATALYST 6
 #endif
 #ifndef SG_READ_ONLY
 	#define SG_READ_ONLY    0x10
@@ -79,9 +79,11 @@
 	#define N_COLD_FUNC 0x0400
 #endif
 
-#if __has_include(<mach-o/fixup-chains2.h>)
+#if __has_include(<mach-o/fixup-chains.h>)
   #include <mach-o/fixup-chains.h>
 #else
+  #define __MACH_O_FIXUP_CHAINS__
+
 	// header of the LC_DYLD_CHAINED_FIXUPS payload
 	struct dyld_chained_fixups_header
 	{
@@ -138,17 +140,17 @@
 
 	// values for dyld_chained_starts_in_segment.pointer_format
 	enum {
-		DYLD_CHAINED_PTR_ARM64E      = 1,
-		DYLD_CHAINED_PTR_64          = 2,
-		DYLD_CHAINED_PTR_32          = 3,
-		DYLD_CHAINED_PTR_32_CACHE    = 4,
-		DYLD_CHAINED_PTR_32_FIRMWARE = 5,
+		DYLD_CHAINED_PTR_ARM64E      	= 1,
+		DYLD_CHAINED_PTR_64          	= 2,
+		DYLD_CHAINED_PTR_32          	= 3,
+		DYLD_CHAINED_PTR_32_CACHE    	= 4,
+		DYLD_CHAINED_PTR_32_FIRMWARE 	= 5,
 	};
 
 	// DYLD_CHAINED_PTR_ARM64E
 	struct dyld_chained_ptr_arm64e_rebase
 	{
-		uint64_t    target   : 43,
+		uint64_t    target   : 43,    // (DYLD_CHAINED_PTR_ARM64E => vmAddr, DYLD_CHAINED_PTR_ARM64E_OFFSET => runtimeOffset)
 					high8    :  8,
 					next     : 11,    // 8-byte stide
 					bind     :  1,    // == 0
@@ -169,7 +171,7 @@
 	// DYLD_CHAINED_PTR_ARM64E
 	struct dyld_chained_ptr_arm64e_auth_rebase
 	{
-		uint64_t    target    : 32,
+		uint64_t    target    : 32,	   // runtimeOffset
 					diversity : 16,
 					addrDiv   :  1,
 					key       :  2,
@@ -191,11 +193,11 @@
 					auth      :  1;    // == 1
 	};
 
-	// DYLD_CHAINED_PTR_64
+	// DYLD_CHAINED_PTR_64/DYLD_CHAINED_PTR_64_OFFSET
 	struct dyld_chained_ptr_64_rebase
 	{
-		uint64_t    target    : 36,    // 64GB max image size
-					high8     :  8,    // top 8 bits set to this after slide added
+		uint64_t    target    : 36,    // 64GB max image size (DYLD_CHAINED_PTR_64 => vmAddr, DYLD_CHAINED_PTR_64_OFFSET => runtimeOffset)
+					high8     :  8,    // top 8 bits set to this (DYLD_CHAINED_PTR_64 => after slide added, DYLD_CHAINED_PTR_64_OFFSET => before slide added)
 					reserved  :  7,    // all zeros
 					next      : 12,    // 4-byte stride
 					bind      :  1;    // == 0
@@ -280,6 +282,63 @@
 	};
 
 #endif  // __has_include(<mach-o/fixup-chains.h>)
+
+#if ((__MACH_O_FIXUP_CHAINS__ - 0) < 2)
+// new fixup-chains.h content for version 2
+enum {
+    DYLD_CHAINED_PTR_64_OFFSET      = 6,
+    DYLD_CHAINED_PTR_ARM64E_OFFSET  = 7,
+};
+#endif
+
+#if ((__MACH_O_FIXUP_CHAINS__ - 0) < 3)
+// new fixup-chains.h content for version 3
+//enum {
+//    DYLD_CHAINED_PTR_64_KERNEL_CACHE    =  8,
+//};
+#endif
+
+#if ((__MACH_O_FIXUP_CHAINS__ - 0) < 4)
+// new fixup-chains.h content for version 4
+enum {
+    DYLD_CHAINED_PTR_ARM64E_KERNEL  	= DYLD_CHAINED_PTR_ARM64E_OFFSET,
+    DYLD_CHAINED_PTR_ARM64E_USERLAND    =  9,    // stride 8, unauth target is vm offset
+    DYLD_CHAINED_PTR_ARM64E_FIRMWARE    = 10,    // stride 4, unauth target is vmaddr
+};
+#endif
+
+#if ((__MACH_O_FIXUP_CHAINS__ - 0) < 6)
+// new fixup-chains.h content for version 6
+enum {
+    DYLD_CHAINED_PTR_ARM64E_USERLAND24  = 12,    // stride 8, unauth target is vm offset, 24-bit bind
+};
+// DYLD_CHAINED_PTR_ARM64E_USERLAND24
+struct dyld_chained_ptr_arm64e_bind24
+{
+    uint64_t    ordinal   : 24,
+                zero      :  8,
+                addend    : 19,    // +/-256K
+                next      : 11,    // 8-byte stide
+                bind      :  1,    // == 1
+                auth      :  1;    // == 0
+};
+
+// DYLD_CHAINED_PTR_ARM64E_USERLAND24
+struct dyld_chained_ptr_arm64e_auth_bind24
+{
+    uint64_t    ordinal   : 24,
+                zero      :  8,
+                diversity : 16,
+                addrDiv   :  1,
+                key       :  2,
+                next      : 11,    // 8-byte stide
+                bind      :  1,    // == 1
+                auth      :  1;    // == 1
+};
+
+
+#endif
+
 
 
 #define LC_DYLD_EXPORTS_TRIE     (0x33 | LC_REQ_DYLD)
@@ -477,6 +536,11 @@
 
 // kind target-address fixup-addr [adj] 
 
+enum class Thumb2Support{
+	none,
+	branch24, // Wide branches (if present) have a 24-bit range.
+	all,
+};
 
 
 struct ArchInfo {
@@ -486,70 +550,76 @@ struct ArchInfo {
 	const char*			llvmTriplePrefix;
 	const char*			llvmTriplePrefixAlt;
 	bool				isSubType;
-	bool				supportsThumb2;
+	Thumb2Support		thumb2Support;
 };
 
 static const ArchInfo archInfoArray[] = {
 #if SUPPORT_ARCH_x86_64
-	{ "x86_64", CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL, "x86_64-",  "", true, false },
+	{ "x86_64", CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL, "x86_64-",  "", true, Thumb2Support::none },
 #endif
 #if SUPPORT_ARCH_x86_64h
-	{ "x86_64h", CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_H,	 "x86_64h-",  "", true, false },
+	{ "x86_64h", CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_H,	 "x86_64h-",  "", true, Thumb2Support::none },
 #endif
 #if SUPPORT_ARCH_i386
-	{ "i386",   CPU_TYPE_I386,   CPU_SUBTYPE_I386_ALL,   "i386-",    "", false, false },
+	{ "i386",   CPU_TYPE_I386,   CPU_SUBTYPE_I386_ALL,   "i386-",    "", false, Thumb2Support::none },
 #endif
 #if SUPPORT_ARCH_armv4t
-	{ "armv4t", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V4T,    "armv4t-",  "", true,  false },
+	{ "armv4t", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V4T,    "armv4t-",  "", true,  Thumb2Support::none },
 	#define SUPPORT_ARCH_arm_any 1
 #endif
 #if SUPPORT_ARCH_armv5
-	{ "armv5", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V5TEJ,  "armv5e-",  "", true,  false },
+	{ "armv5", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V5TEJ,  "armv5e-",  "", true,  Thumb2Support::none },
 	#define SUPPORT_ARCH_arm_any 1
 #endif
 #if SUPPORT_ARCH_armv6
-	{ "armv6", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V6,     "armv6-",   "", true,  false },
+	{ "armv6", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V6,     "armv6-",   "", true,  Thumb2Support::none },
 	#define SUPPORT_ARCH_arm_any 1
 #endif
 #if SUPPORT_ARCH_armv7
-	{ "armv7", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V7,     "thumbv7-", "armv7-", true,  true },
+	{ "armv7", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V7,     "thumbv7-", "armv7-", true,  Thumb2Support::all },
 	#define SUPPORT_ARCH_arm_any 1
 #endif
 #if SUPPORT_ARCH_armv7f
-	{ "armv7f", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7F,    "thumbv7f-", "", true,  true },
+	{ "armv7f", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7F,    "thumbv7f-", "", true,  Thumb2Support::all },
 	#define SUPPORT_ARCH_arm_any 1
 #endif 
 #if SUPPORT_ARCH_armv7k
-	{ "armv7k", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7K,    "thumbv7k-", "", true,  true },
+	{ "armv7k", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7K,    "thumbv7k-", "", true,  Thumb2Support::all },
 	#define SUPPORT_ARCH_arm_any 1
 #endif
 #if SUPPORT_ARCH_armv7s
-	{ "armv7s", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7S,    "thumbv7s-", "armv7s", true,  true },
+	{ "armv7s", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7S,    "thumbv7s-", "armv7s", true,  Thumb2Support::all },
 	#define SUPPORT_ARCH_arm_any 1
 #endif
 #if SUPPORT_ARCH_armv6m
-	{ "armv6m", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V6M,    "thumbv6m-", "", true,  false },
+	{ "armv6m", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V6M,    "thumbv6m-", "", true,  Thumb2Support::branch24 },
 	#define SUPPORT_ARCH_arm_any 1
 #endif
 #if SUPPORT_ARCH_armv7m
-	{ "armv7m", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7M,    "thumbv7m-", "armv7m", true,  true },
+	{ "armv7m", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7M,    "thumbv7m-", "armv7m", true,  Thumb2Support::all },
 	#define SUPPORT_ARCH_arm_any 1
 #endif
 #if SUPPORT_ARCH_armv7em
-	{ "armv7em", CPU_TYPE_ARM,   CPU_SUBTYPE_ARM_V7EM,   "thumbv7em-", "armv7em", true,  true },
+	{ "armv7em", CPU_TYPE_ARM,   CPU_SUBTYPE_ARM_V7EM,   "thumbv7em-", "armv7em", true, Thumb2Support::all },
 	#define SUPPORT_ARCH_arm_any 1
 #endif
 #if SUPPORT_ARCH_armv8
-	{ "armv8", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V8,     "thumbv8-", "armv8", true,  true },
+	{ "armv8", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V8,     "thumbv8-", "armv8", true,  Thumb2Support::all },
 	#define SUPPORT_ARCH_arm_any 1
 #endif
 #if SUPPORT_ARCH_arm64
-	{ "arm64", CPU_TYPE_ARM64,   CPU_SUBTYPE_ARM64_ALL,  "arm64-",  "aarch64-",  true,  false },
+	{ "arm64", CPU_TYPE_ARM64,   CPU_SUBTYPE_ARM64_ALL,  "arm64-",  "aarch64-",  true,  Thumb2Support::none },
+#endif
+#if SUPPORT_ARCH_arm64e
+	{ "arm64e", CPU_TYPE_ARM64,   CPU_SUBTYPE_ARM64E,    "arm64e-",  "aarch64e-",  true,  Thumb2Support::none },
 #endif
 #if SUPPORT_ARCH_arm64v8
-	{ "arm64v8", CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8,   "arm64v8-",  "aarch64-",   true,  false },
+	{ "arm64v8", CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8,   "arm64v8-",  "aarch64-",   true,  Thumb2Support::none },
 #endif
-	{ NULL, 0, 0, NULL, NULL, false, false }
+#if SUPPORT_ARCH_arm64_32
+	{ "arm64_32", CPU_TYPE_ARM64_32,   CPU_SUBTYPE_ARM64_32_V8,  "arm64_32-",  "aarch64_32-",  true,  Thumb2Support::none },
+#endif
+	{ NULL, 0, 0, NULL, NULL, false, Thumb2Support::none }
 };
 
 
@@ -589,8 +659,11 @@ public:
 	uint32_t		cputype() const					INLINE { return E::get32(header.fields.cputype); }
 	void			set_cputype(uint32_t value)		INLINE { E::set32((uint32_t&)header.fields.cputype, value); }
 
-	uint32_t		cpusubtype() const				INLINE { return E::get32(header.fields.cpusubtype); }
-	void			set_cpusubtype(uint32_t value)	INLINE { E::set32((uint32_t&)header.fields.cpusubtype, value); }
+	uint32_t		cpusubtype() const				INLINE { return (E::get32(header.fields.cpusubtype) & ~CPU_SUBTYPE_MASK); }
+	void			set_cpusubtype(uint32_t value)	INLINE { E::set32((uint32_t&)header.fields.cpusubtype, (value & ~CPU_SUBTYPE_MASK) | (cpusubtypeflags() << 24)); }
+
+	uint8_t			cpusubtypeflags() const			INLINE { return ((E::get32(header.fields.cpusubtype) & CPU_SUBTYPE_MASK) >> 24); }
+	void			set_cpusubtypeflags(uint8_t value)	INLINE { E::set32((uint32_t&)header.fields.cpusubtype, cpusubtype() | (((uint32_t)value) << 24)); }
 
 	uint32_t		filetype() const				INLINE { return E::get32(header.fields.filetype); }
 	void			set_filetype(uint32_t value)	INLINE { E::set32(header.fields.filetype, value); }
@@ -1366,7 +1439,7 @@ public:
 
 	uint32_t		r_other() const				INLINE { return other; }
 	
-	void			set_r_length()				INLINE { set_r_length((sizeof(typename P::uint_t)==8) ? 3 : 2); }
+	// void			set_r_length()				INLINE { set_r_length((sizeof(typename P::uint_t)==8) ? 3 : 2); }
 
 	typedef typename P::E		E;
 private:

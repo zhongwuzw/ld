@@ -57,6 +57,7 @@
 
 #include <CommonCrypto/CommonDigest.h>
 #include <AvailabilityMacros.h>
+#include <System/machine/cpu_capabilities.h>
 
 #include "MachOTrie.hpp"
 
@@ -67,7 +68,7 @@
 #include "HeaderAndLoadCommands.hpp"
 #include "LinkEdit.hpp"
 #include "LinkEditClassic.hpp"
-#include "json.hpp"
+#include "generic_dylib_file.hpp"
 
 namespace ld {
 namespace tool {
@@ -77,9 +78,9 @@ uint32_t sAdrpNoped = 0;
 uint32_t sAdrpNotNoped = 0;
 
 
-OutputFile::OutputFile(const Options& opts) 
+OutputFile::OutputFile(const Options& opts, ld::Internal& state) 
 	:
-		usesWeakExternalSymbols(false), overridesWeakExternalSymbols(false), 
+		usesWeakExternalSymbols(false), overridesWeakExternalSymbols(false), reExportsWeakDefSymbols(false),
 		_noReExportedDylibs(false), pieDisabled(false), hasDataInCode(false), 
 		headerAndLoadCommandsSection(NULL),
 		rebaseSection(NULL), bindingSection(NULL), weakBindingSection(NULL), 
@@ -90,11 +91,11 @@ OutputFile::OutputFile(const Options& opts)
 		localRelocationsSection(NULL), externalRelocationsSection(NULL), 
 		sectionRelocationsSection(NULL), 
 		indirectSymbolTableSection(NULL),
-		threadedPageStartsSection(NULL),
+		threadedPageStartsSection(NULL), codeSignatureSection(NULL),
 		_options(opts),
-		_hasDyldInfo(opts.makeCompressedDyldInfo()),
-		_hasExportsTrie(opts.makeChainedFixups() && _options.dyldLoadsOutput()),
-		_hasChainedFixups(opts.makeChainedFixups() && _options.dyldLoadsOutput()),
+		_hasDyldInfo(opts.makeCompressedDyldInfo() || state.cantUseChainedFixups),
+		_hasExportsTrie(opts.makeChainedFixups() && !state.cantUseChainedFixups && _options.dyldLoadsOutput()),
+		_hasChainedFixups(opts.makeChainedFixups() && !state.cantUseChainedFixups && _options.dyldOrKernelLoadsOutput()),
 		_hasThreadedPageStarts(opts.makeThreadedStartsSection()),
 		_hasSymbolTable(true),
 		_hasSectionRelocations(opts.outputKind() == Options::kObjectFile),
@@ -102,9 +103,10 @@ OutputFile::OutputFile(const Options& opts)
 		_hasFunctionStartsInfo(opts.addFunctionStarts()),
 		_hasDataInCodeInfo(opts.addDataInCodeInfo()),
 		_hasDynamicSymbolTable(true),
-		_hasLocalRelocations(!opts.makeCompressedDyldInfo() && !opts.makeThreadedStartsSection()),
-		_hasExternalRelocations(!opts.makeCompressedDyldInfo() && !opts.makeThreadedStartsSection()),
+		_hasLocalRelocations(!_hasDyldInfo && !opts.makeThreadedStartsSection()),
+		_hasExternalRelocations(!_hasDyldInfo && !opts.makeThreadedStartsSection()),
 		_hasOptimizationHints(opts.outputKind() == Options::kObjectFile),
+		_hasCodeSignature(opts.adHocSign()),
 		_encryptedTEXTstartOffset(0),
 		_encryptedTEXTendOffset(0),
 		_localSymbolsStartIndex(0),
@@ -126,7 +128,8 @@ OutputFile::OutputFile(const Options& opts)
 		_splitSegInfoAtom(NULL),
 		_functionStartsAtom(NULL),
 		_dataInCodeAtom(NULL),
-		_optimizationHintsAtom(NULL)
+		_optimizationHintsAtom(NULL),
+		_codeSignatureAtom(NULL)
 {
 }
 
@@ -139,8 +142,8 @@ void OutputFile::dumpAtomsBySection(ld::Internal& state, bool printAtoms)
 				(*it)->address, (*it)->size, (*it)->alignment, (*it)->fileOffset);
 		if ( printAtoms ) {
 			std::vector<const ld::Atom*>& atoms = (*it)->atoms;
-			for (std::vector<const ld::Atom*>::iterator ait = atoms.begin(); ait != atoms.end(); ++ait) {
-				fprintf(stderr, "   %p (0x%04llX) %s\n", *ait, (*ait)->size(), (*ait)->name());
+			for (const ld::Atom* atom : atoms) {
+				fprintf(stderr, "   %p (size=0x%04llX) %s from %s\n", atom, atom->size(), atom->name(), atom->safeFilePath());
 			}
 		}
 	}
@@ -171,98 +174,6 @@ void OutputFile::write(ld::Internal& state)
 	this->writeOutputFile(state);
 	this->writeMapFile(state);
 	this->writeJSONEntry(state);
-	this->printModInitInfo(state);
-}
-
-void OutputFile::enumerateFixups(const ld::Atom* atom, ld::Internal& state, const std::function<void(const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom)>& handler) {
-	if (atom == NULL) {
-		return;
-	}
-	for (ld::Fixup::iterator fit = atom->fixupsBegin(); fit != atom->fixupsEnd(); ++fit) {
-		const ld::Atom *targetAtom = nullptr;
-		std::shared_ptr<string> name = std::make_shared<string>(atom->name());
-		switch (fit->binding) {
-			case ld::Fixup::bindingDirectlyBound:
-				targetAtom = fit->u.target;
-				break;
-			case ld::Fixup::bindingsIndirectlyBound:
-				targetAtom = state.indirectBindingTable[fit->u.bindingIndex];
-				break;
-			default:
-				break;
-		}
-		
-		if (targetAtom == NULL || handler == NULL) {
-			return;
-		}
-		
-		if (targetAtom->contentType() == ld::Atom::typeCString) {
-			name.reset(new string((char*)targetAtom->rawContentPointer()));
-		} else if (targetAtom->section().type() == ld::Section::typeCStringPointer) {
-			for (ld::Fixup::iterator fit = targetAtom->fixupsBegin(); fit != targetAtom->fixupsEnd(); ++fit) {
-				if ( fit->binding == ld::Fixup::bindingByContentBound ) {
-					const ld::Atom* cstringAtom = fit->u.target;
-					name.reset(new string((char*)cstringAtom->rawContentPointer()));
-				} else if (fit->binding == ld::Fixup::bindingsIndirectlyBound) {
-					const ld::Atom* objCStringAtom = state.indirectBindingTable[fit->u.bindingIndex];
-					name.reset(new string((char*)objCStringAtom->rawContentPointer()));
-				}
-			}
-		} else if (targetAtom->section().type() == ld::Section::typeObjCClassRefs) {
-			for (ld::Fixup::iterator fit = targetAtom->fixupsBegin(); fit != targetAtom->fixupsEnd(); ++fit) {
-				if ( fit->binding == ld::Fixup::bindingByContentBound ) {
-					const ld::Atom* objcClassRefAtom = fit->u.target;
-					name.reset(new string(objcClassRefAtom->name()));
-				} else if (fit->binding == ld::Fixup::bindingsIndirectlyBound) {
-					const ld::Atom* objcClassRefAtom = state.indirectBindingTable[fit->u.bindingIndex];
-					name.reset(new string(objcClassRefAtom->name()));
-				}
-			}
-		} else {
-			name.reset(new string(targetAtom->name()));
-		}
-		
-		handler(std::move(name), targetAtom);
-	}
-}
-
-void OutputFile::printModInitInfo(ld::Internal& state)
-{
-	nlohmann::json modInitJson;
-	for (std::vector<ld::Internal::FinalSection*>::iterator sit = state.sections.begin(); sit != state.sections.end(); ++sit) {
-		ld::Internal::FinalSection* sect = *sit;
-		if ( sect->type() != ld::Section::typeInitializerPointers )
-			continue;
-		for (std::vector<const ld::Atom*>::const_iterator it=sect->atoms.begin(); it != sect->atoms.end(); ++it) {
-			const ld::Atom* atom = *it;
-			enumerateFixups(atom, state, [&state, atom, this, &modInitJson](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
-				std::string filePath = atom->safeFilePath();
-				const std::shared_ptr<std::string>& refBlockName = std::move(symbolName);
-				
-				auto const pos = filePath.find_last_of('(');
-				auto fileName = filePath.substr(pos + 1);
-				fileName.erase(std::remove(fileName.begin(), fileName.end(), ')'), fileName.end());
-				
-				std::unordered_set<std::string> symbols = {};
-				enumerateFixups(targetAtom, state, [&state, &symbols, this](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
-					symbols.emplace(*symbolName.get());
-					enumerateFixups(targetAtom, state, [&symbols](const std::shared_ptr<std::string>& symbolName, const ld::Atom *targetAtom) {
-						symbols.emplace(*symbolName.get());
-					});
-				});
-				(modInitJson)[fileName][*refBlockName.get()] = symbols;
-			});
-		}
-	}
-	
-//	std::cout << modInitJson.dump() << std::endl;
-	std::string filePath;
-	if (_options.modInitCheckFilePath()) {
-		filePath = _options.modInitCheckFilePath();
-	}
-	filePath += "modInitCheck.json";
-	std::ofstream file(filePath);
-	file << modInitJson << std::endl;
 }
 
 bool OutputFile::findSegment(ld::Internal& state, uint64_t addr, uint64_t* start, uint64_t* end, uint32_t* index)
@@ -323,14 +234,16 @@ void OutputFile::assignAtomAddresses(ld::Internal& state)
 
 void OutputFile::updateLINKEDITAddresses(ld::Internal& state)
 {
-	if ( _options.makeChainedFixups() && _options.dyldLoadsOutput() ) {
-		assert(_exportInfoAtom != NULL);
-		_exportInfoAtom->encode();
+	if ( _options.makeChainedFixups() && !state.cantUseChainedFixups && _options.dyldOrKernelLoadsOutput() ) {
+		if ( _hasExportsTrie ) {
+			assert(_exportInfoAtom != NULL);
+			_exportInfoAtom->encode();
+		}
 
 		assert(_chainedInfoAtom != NULL);
 		_chainedInfoAtom->encode();
 	}
-	else if ( _options.makeCompressedDyldInfo() ) {
+	else if ( _options.makeCompressedDyldInfo() || state.cantUseChainedFixups) {
 		// build dylb rebasing info  
 		assert(_rebasingInfoAtom != NULL);
 		_rebasingInfoAtom->encode();
@@ -417,13 +330,17 @@ void OutputFile::updateLINKEDITAddresses(ld::Internal& state)
 				maxAlignment = atom->alignment().powerOf2;
 			// calculate section offset for this atom
 			uint64_t alignment = 1 << atom->alignment().powerOf2;
-			uint64_t currentModulus = (offset % alignment);
+			uint64_t currentModulus = (curLinkEditAddress % alignment);
 			uint64_t requiredModulus = atom->alignment().modulus;
 			if ( currentModulus != requiredModulus ) {
-				if ( requiredModulus > currentModulus )
-					offset += requiredModulus-currentModulus;
-				else
-					offset += requiredModulus+alignment-currentModulus;
+				if ( requiredModulus > currentModulus ) {
+					curLinkEditAddress    += requiredModulus-currentModulus;
+					curLinkEditfileOffset += requiredModulus-currentModulus;
+				}
+				else {
+					curLinkEditAddress    += requiredModulus+alignment-currentModulus;
+					curLinkEditfileOffset += requiredModulus+alignment-currentModulus;
+				}
 			}
 			(const_cast<ld::Atom*>(atom))->setSectionOffset(offset);
 			(const_cast<ld::Atom*>(atom))->setSectionStartAddress(curLinkEditAddress);
@@ -438,6 +355,11 @@ void OutputFile::updateLINKEDITAddresses(ld::Internal& state)
 		curLinkEditfileOffset += sect->size;
 	}
 	
+	if ( _hasCodeSignature ) {
+		assert(_codeSignatureAtom != NULL);
+		_codeSignatureAtom->encode();
+	}
+
 	_fileSize = state.sections.back()->fileOffset + state.sections.back()->size;
 }
 
@@ -834,7 +756,7 @@ void OutputFile::rangeCheckARMBranch24(int64_t displacement, ld::Internal& state
 bool OutputFile::checkThumbBranch22Displacement(int64_t displacement)
 {
 	// thumb2 supports  +/- 16MB displacement
-	if ( _options.preferSubArchitecture() && _options.archSupportsThumb2() ) {
+	if ( _options.preferSubArchitecture() && _options.archThumb2Support() >= Thumb2Support::branch24 ) {
 		if ( (displacement > 16777214LL) || (displacement < (-16777216LL)) ) {
 			return false;
 		}
@@ -857,7 +779,7 @@ void OutputFile::rangeCheckThumbBranch22(int64_t displacement, ld::Internal& sta
 	printSectionLayout(state);
 
 	const ld::Atom* target;	
-	if ( _options.preferSubArchitecture() && _options.archSupportsThumb2() ) {
+	if ( _options.preferSubArchitecture() && _options.archThumb2Support() >= Thumb2Support::branch24 ) {
 		throwf("b/bl/blx thumb2 branch out of range (%lld max is +/-16MB): from %s (0x%08llX) to %s (0x%08llX)", 
 				displacement, atom->name(), atom->finalAddress(), referenceTargetAtomName(state, fixup), 
 				addressOf(state, fixup, &target));
@@ -1403,6 +1325,7 @@ static bool isPageOffsetKind(const ld::Fixup* fixup, bool mustBeGOT=false)
 	const ld::Fixup* f;
 	switch ( fixup->kind ) {
 		case ld::Fixup::kindStoreTargetAddressARM64PageOff12:
+		case ld::Fixup::kindStoreTargetAddressARM64PageOff12ConvertAddToLoad:
 			return !mustBeGOT;
 		case ld::Fixup::kindStoreTargetAddressARM64GOTLoadPageOff12:
 		case ld::Fixup::kindStoreTargetAddressARM64GOTLeaPageOff12:
@@ -1453,12 +1376,16 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 	bool is_blx;
 	bool is_b;
 	bool thumbTarget = false;
+	bool isRelative = false;
 	std::map<uint32_t, const Fixup*> usedByHints;
 #if SUPPORT_ARCH_arm64e
 	Fixup::AuthData authData;
 #endif
 	for (ld::Fixup::iterator fit = atom->fixupsBegin(), end=atom->fixupsEnd(); fit != end; ++fit) {
 		uint8_t* fixUpLocation = &buffer[fit->offsetInAtom];
+		if ( fit->firstInCluster() ) {
+			isRelative = false;
+		}
 		ld::Fixup::LOH_arm64 lohExtra;
 		switch ( (ld::Fixup::Kind)(fit->kind) ) { 
 			case ld::Fixup::kindNone:
@@ -1480,6 +1407,7 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 				delta = addressOf(state, fit, &fromTarget);
 				if ( ! fit->contentAddendOnly )
 					accumulator -= delta;
+				isRelative = true;
 				break;
 			case ld::Fixup::kindAddAddend:
 				if ( ! fit->contentIgnoresAddend ) {
@@ -1503,6 +1431,7 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 				thumbTarget = targetIsThumb(state, fit);
 				if ( thumbTarget ) 
 					accumulator |= 1;
+				isRelative = true;
 				break;
 			case ld::Fixup::kindSetTargetSectionOffset:
 				accumulator = sectionOffsetOf(state, fit);
@@ -1521,15 +1450,15 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 				break;
 			case ld::Fixup::kindStoreLittleEndian32:
 				rangeCheckAbsolute32(accumulator, state, atom, fit);
-				if ( _options.makeChainedFixups() && !fit->contentAddendOnly && (atom->contentType() != ld::Atom::ContentType::typeCFI)
+				if ( _options.makeChainedFixups() && !state.cantUseChainedFixups && !fit->contentAddendOnly && (atom->contentType() != ld::Atom::ContentType::typeCFI)
 				 	&& (atom->section().type() != ld::Section::typeUnwindInfo) && (atom->section().type() != ld::Section::typeCode)
-				 	&& (atom->section().type() != ld::Section::typeDtraceDOF)  )
+				 	&& (atom->section().type() != ld::Section::typeDtraceDOF) && !isRelative )
 					setFixup32(fixUpLocation, accumulator, toTarget);
 				else
 					set32LE(fixUpLocation, accumulator);
 				break;
 			case ld::Fixup::kindStoreLittleEndian64:
-				if ( _options.makeChainedFixups() && !fit->contentAddendOnly && (atom->contentType() != ld::Atom::ContentType::typeCFI) )
+				if ( _options.makeChainedFixups() && !state.cantUseChainedFixups && !fit->contentAddendOnly && !isRelative )
 					setFixup64(fixUpLocation, accumulator, toTarget);
 				else
 					set64LE(fixUpLocation, accumulator);
@@ -1746,7 +1675,7 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 				if ( fit->contentAddendOnly )
 					accumulator = 0;
 				rangeCheckAbsolute32(accumulator, state, atom, fit);
-				if ( _options.makeChainedFixups() && !fit->contentAddendOnly )
+				if ( _options.makeChainedFixups() && !state.cantUseChainedFixups && !fit->contentAddendOnly )
 					setFixup32(fixUpLocation, accumulator, toTarget);
 				else
 					set32LE(fixUpLocation, accumulator);
@@ -1755,8 +1684,10 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 				accumulator = addressOf(state, fit, &toTarget);
 				if ( fit->contentAddendOnly )
 					accumulator = 0;
-				if ( _options.makeChainedFixups() && !fit->contentAddendOnly )
+				if ( _options.makeChainedFixups() && !state.cantUseChainedFixups && !fit->contentAddendOnly )
 					setFixup64(fixUpLocation, accumulator, toTarget);
+				else if ( (atom->contentType() == ld::Atom::typeInitializerPointers) && _options.dyldLoadsOutput() && ((accumulator-mhAddress) > 0x100000000ULL) )
+					throwf("initializer '%s' is >4GB from start of image", toTarget->name());
 				else
 					set64LE(fixUpLocation, accumulator);
 				break;
@@ -1774,10 +1705,6 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 					accumulator |= ((uint64_t)authData.key) << 49;
 					// Set the high bit as we are authenticated
 					accumulator |= 1ULL << 63;
-					set64LE(fixUpLocation, accumulator);
-				}
-				else if  (_options.outputKind() == Options::kKextBundle ) {
-					// kexts dont' handle auth pointers, write unauth pointer
 					set64LE(fixUpLocation, accumulator);
 				}
 				else {
@@ -1807,10 +1734,6 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 					accumulator |= ((uint64_t)authData.key) << 49;
 					// Set the high bit as we are authenticated
 					accumulator |= 1ULL << 63;
-					set64LE(fixUpLocation, accumulator);
-				}
-				else if  (_options.outputKind() == Options::kKextBundle ) {
-					// kexts dont' handle auth pointers, write unauth pointer
 					set64LE(fixUpLocation, accumulator);
 				}
 				else {
@@ -2025,7 +1948,7 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 						delta += 0x2000000;
 				}
 				rangeCheckThumbBranch22(delta, state, atom, fit);
-				if ( _options.preferSubArchitecture() && _options.archSupportsThumb2() ) {
+				if ( _options.preferSubArchitecture() && _options.archThumb2Support() >= Thumb2Support::branch24) {
 					// The instruction is really two instructions:
 					// The lower 16 bits are the first instruction, which contains the high
 					//   11 bits of the displacement.
@@ -2184,6 +2107,7 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 				if ( _options.outputKind() == Options::kObjectFile )
 					break;
 			case ld::Fixup::kindStoreTargetAddressARM64PageOff12:
+			case ld::Fixup::kindStoreTargetAddressARM64PageOff12ConvertAddToLoad:
 			case ld::Fixup::kindStoreTargetAddressARM64TLVPLoadPageOff12:
 				accumulator = addressOf(state, fit, &toTarget);
 				// fall into kindAddressARM64PageOff12 case
@@ -2237,6 +2161,22 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 						offset = 0;
 					uint32_t imm12 = offset << 10;
 					newInstruction = (instruction & 0xFFC003FF) | imm12;
+
+					// Convert to an LDR if needed
+					if ( fit->kind == ld::Fixup::kindStoreTargetAddressARM64PageOff12ConvertAddToLoad ) {
+						AddInfo addInfo;
+						if ( !parseADD(newInstruction, addInfo) )
+							throwf("Reloc does not point to an ADD instruction in %s", atom->name());
+						LoadStoreInfo ldrInfo;
+						ldrInfo.reg 	= addInfo.destReg;
+						ldrInfo.baseReg = addInfo.srcReg;
+						ldrInfo.offset 	= addInfo.addend;
+						ldrInfo.size 	= 8;
+						ldrInfo.isStore	= false;
+						ldrInfo.isFloat = false;
+						ldrInfo.signEx 	= signedNot;
+						newInstruction = makeLoadOrStore(ldrInfo);
+					}
 					set32LE(fixUpLocation, newInstruction);
 				}
 				break;
@@ -2273,7 +2213,12 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 			case ld::Fixup::kindStoreARM64PointerToGOT:
 				set64LE(fixUpLocation, accumulator);
 				break;
-        case ld::Fixup::kindStoreARM64PCRelToGOT:
+#if SUPPORT_ARCH_arm64_32
+			case ld::Fixup::kindStoreARM64PointerToGOT32:
+				set32LE(fixUpLocation, accumulator);
+				break;
+#endif
+			case ld::Fixup::kindStoreARM64PCRelToGOT:
 				if ( fit->contentAddendOnly )
 					delta = accumulator;
 				else
@@ -2738,11 +2683,16 @@ void OutputFile::applyFixUps(ld::Internal& state, uint64_t mhAddress, const ld::
 
 }
 
-static bool chainedFixupAddendFitsInline(uint64_t accumulator, uint16_t chainedPointerFormat) {
+static bool chainedFixupBindAddendFitsInline(uint64_t accumulator, uint16_t chainedPointerFormat) {
 	switch (chainedPointerFormat) {
 		case DYLD_CHAINED_PTR_ARM64E:
-			return (accumulator <= 0x80000);
+		case DYLD_CHAINED_PTR_ARM64E_KERNEL:
+		case DYLD_CHAINED_PTR_ARM64E_USERLAND:
+		case DYLD_CHAINED_PTR_ARM64E_USERLAND24:
+		case DYLD_CHAINED_PTR_ARM64E_FIRMWARE:
+			return (accumulator < 0x40000) || (accumulator >= 0xFFFFFFFFFFFC0000ULL);
 		case DYLD_CHAINED_PTR_64:
+		case DYLD_CHAINED_PTR_64_OFFSET:
 			return (accumulator <= 255);
 		case DYLD_CHAINED_PTR_32:
 			return (accumulator <= 63);
@@ -2750,15 +2700,28 @@ static bool chainedFixupAddendFitsInline(uint64_t accumulator, uint16_t chainedP
 			assert(0 && "Binds are not supported");
 			return false;
 		case DYLD_CHAINED_PTR_32_FIRMWARE:
-			assert(0 && "Binds are not supported");
+			return (accumulator == 0);
 			return false;
 	}
 	assert(0 && "Unknown pointer format");
 	return false;
 }
 
-bool OutputFile::needsBind(const ld::Atom* toTarget, uint64_t* accumulator, uint64_t* inlineAddend,
+bool OutputFile::needsBind(const ld::Atom*& toTarget, bool authPtr, uint64_t* accumulator, uint64_t* inlineAddend,
 						   uint32_t* bindOrdinal, uint32_t* libOrdinal) const {
+
+
+
+	if ( toTarget->isAlias() && (toTarget->definition() == ld::Atom::definitionProxy) ) {
+		   // <rdar://problem/13828711> if target is an import alias, use base of alias
+		   for (ld::Fixup::iterator tfit = toTarget->fixupsBegin(), end=toTarget->fixupsEnd(); tfit != end; ++tfit) {
+			   if ( tfit->firstInCluster() && (tfit->kind == ld::Fixup::kindNoneFollowOn) && (tfit->binding == ld::Fixup::bindingDirectlyBound) ) {
+				   //fprintf(stderr, "switching import of %s to import of %s\n", target->name(),  tfit->u.target->name());
+				   toTarget = tfit->u.target;
+			   }
+		   }
+	   }
+
 	bool isBind = false;
 	bool isWeakBind = false;
 	switch ( toTarget->definition() ) {
@@ -2775,7 +2738,7 @@ bool OutputFile::needsBind(const ld::Atom* toTarget, uint64_t* accumulator, uint
 			if ( toTarget->scope() != ld::Atom::scopeGlobal )
 				break;
 			// reference to global weak def needs weak binding
-			if ( (toTarget->combine() == ld::Atom::combineByName) && (toTarget->definition() == ld::Atom::definitionRegular) ) {
+			if ( (toTarget->combine() == ld::Atom::combineByName) && (toTarget->definition() == ld::Atom::definitionRegular) && _options.dyldOrKernelLoadsOutput() ) {
 				isWeakBind = true;
 			}
 			else if ( _options.outputKind() == Options::kDynamicExecutable ) {
@@ -2785,6 +2748,12 @@ bool OutputFile::needsBind(const ld::Atom* toTarget, uint64_t* accumulator, uint
 				// for flat-namespace or interposable two-level-namespace
 				// all references to exported symbols get indirected
 				if ( (_options.nameSpace() != Options::kTwoLevelNameSpace) || _options.interposable(toTarget->name()) ) {
+					isBind = true;
+					uint64_t targetAddr = toTarget->finalAddress();
+					// thumb bit should not be in addend
+					if ( toTarget->isThumb() )
+						*accumulator &= -2;
+					*accumulator -= targetAddr;
 					break;
 				}
 				else if ( _options.forceCoalesce(toTarget->name()) ) {
@@ -2803,7 +2772,7 @@ bool OutputFile::needsBind(const ld::Atom* toTarget, uint64_t* accumulator, uint
 			// thumb bit should not be in addend
 			if ( toTarget->isThumb() )
 				*accumulator &= -2;
-			if ( chainedFixupAddendFitsInline(*accumulator, chainedPointerFormat()) ) {
+			if ( !authPtr && chainedFixupBindAddendFitsInline(*accumulator, chainedPointerFormat()) ) {
 				if ( inlineAddend != nullptr )
 					*inlineAddend = *accumulator;
 				*accumulator = 0;
@@ -2817,32 +2786,18 @@ bool OutputFile::needsBind(const ld::Atom* toTarget, uint64_t* accumulator, uint
 	}
 	else if ( isBind ) {
 		if ( accumulator != nullptr ) {
-			if ( chainedFixupAddendFitsInline(*accumulator, chainedPointerFormat()) ) {
+			if ( !authPtr && chainedFixupBindAddendFitsInline(*accumulator, chainedPointerFormat()) ) {
 				if ( inlineAddend != nullptr )
 					*inlineAddend = *accumulator;
 				*accumulator = 0;
 			}
 		}
-		if ( bindOrdinal != nullptr )
-			*bindOrdinal = _chainedFixupBinds.ordinal(toTarget, *accumulator);
-		if ( libOrdinal != nullptr ) {
-			const ld::dylib::File* dylib = (ld::dylib::File*)(toTarget->file());
-			if ( dylib != nullptr ) {
-				*libOrdinal = dylibToOrdinal(dylib);
-			}
-			else {
-				// handle undefined dynamic_lookup
-				if ( _options.undefinedTreatment() == Options::kUndefinedDynamicLookup ) {
-					if ( _options.sharedRegionEligible() )
-						throwf("-undefined dynamic_lookup cannot be used to find '%s' in dylib in dyld shared cache", toTarget->name());
-					return BIND_SPECIAL_DYLIB_FLAT_LOOKUP;
-				}
-
-				// handle -U _foo
-				if ( _options.allowedUndefined(toTarget->name()) )
-					return BIND_SPECIAL_DYLIB_FLAT_LOOKUP;
-			}
+		if ( bindOrdinal != nullptr ) {
+			uint64_t addend = (accumulator ? *accumulator : 0);
+			*bindOrdinal = _chainedFixupBinds.ordinal(toTarget, addend);
 		}
+		if ( libOrdinal != nullptr )
+			*libOrdinal = compressedOrdinalForAtom(toTarget);
 	}
 	return isBind || isWeakBind;
 }
@@ -2852,7 +2807,7 @@ void OutputFile::setFixup64(uint8_t* fixUpLocation, uint64_t accumulator, const 
 {
 	uint32_t bindOrdinal = 0;
 	uint64_t inlineAddend = 0;
-	bool isBind = needsBind(toTarget, &accumulator, &inlineAddend, &bindOrdinal);
+	bool isBind = needsBind(toTarget, false, &accumulator, &inlineAddend, &bindOrdinal);
 	switch ( chainedPointerFormat() ) {
 		case DYLD_CHAINED_PTR_64:
 			if ( isBind ) {
@@ -2862,6 +2817,7 @@ void OutputFile::setFixup64(uint8_t* fixUpLocation, uint64_t accumulator, const 
 				b->reserved= 0;
 				b->addend  = inlineAddend;
 				b->ordinal = bindOrdinal;
+				assert(b->ordinal == bindOrdinal);
 				//fprintf(stderr, "%p bind, ord=%03d, addend=%lld %s\n", b, symOrdinal, accumulator, toTarget->name());
 			}
 			else {
@@ -2876,7 +2832,34 @@ void OutputFile::setFixup64(uint8_t* fixUpLocation, uint64_t accumulator, const 
 				assert(reconstituted == accumulator);
 			}
 			break;
+		case DYLD_CHAINED_PTR_64_OFFSET:
+			if ( isBind ) {
+				dyld_chained_ptr_64_bind* b = (dyld_chained_ptr_64_bind*)fixUpLocation;
+				b->bind    = 1;
+				b->next    = 0;	// chained fixed up later once all fixup locations are known
+				b->reserved= 0;
+				b->addend  = inlineAddend;
+				b->ordinal = bindOrdinal;
+				assert(b->ordinal == bindOrdinal);
+				//fprintf(stderr, "%p bind, ord=%03d, addend=%lld %s\n", b, symOrdinal, accumulator, toTarget->name());
+			}
+			else {
+				//fprintf(stderr, "%p rebase, target=0x%08llX %s\n", fixUpLocation, accumulator, toTarget->name());
+				uint64_t vmOffset = (accumulator - _options.machHeaderVmAddr());
+				uint64_t high8 = vmOffset >> 56;
+				vmOffset &= 0x00FFFFFFFFFFFFFFULL;
+				dyld_chained_ptr_64_rebase* r = (dyld_chained_ptr_64_rebase*)fixUpLocation;
+				r->bind    = 0;
+				r->next    = 0;	// chained fixed up later once all fixup locations are known
+				r->reserved= 0;
+				r->high8   = high8;
+				r->target  = vmOffset;
+				uint64_t reconstituted = (((uint64_t)(r->high8)) << 56) + r->target;
+				assert(reconstituted == (accumulator - _options.machHeaderVmAddr()));
+			}
+			break;
 		case DYLD_CHAINED_PTR_ARM64E:
+		case DYLD_CHAINED_PTR_ARM64E_FIRMWARE:
 			if ( isBind ) {
 				dyld_chained_ptr_arm64e_bind* b = (dyld_chained_ptr_arm64e_bind*)fixUpLocation;
 				b->auth    = 0;
@@ -2885,6 +2868,7 @@ void OutputFile::setFixup64(uint8_t* fixUpLocation, uint64_t accumulator, const 
 				b->addend  = inlineAddend;
 				b->zero	   = 0;
 				b->ordinal = bindOrdinal;
+				assert(b->ordinal == bindOrdinal);
 				//fprintf(stderr, "%p bind, ord=%03d, addend=%lld %s\n", b, symOrdinal, accumulator, toTarget->name());
 			}
 			else {
@@ -2899,6 +2883,61 @@ void OutputFile::setFixup64(uint8_t* fixUpLocation, uint64_t accumulator, const 
 				assert(reconstituted == accumulator);
 			}
 			break;
+		case DYLD_CHAINED_PTR_ARM64E_KERNEL:
+		case DYLD_CHAINED_PTR_ARM64E_USERLAND:
+			if ( isBind ) {
+				dyld_chained_ptr_arm64e_bind* b = (dyld_chained_ptr_arm64e_bind*)fixUpLocation;
+				b->auth    = 0;
+				b->bind    = 1;
+				b->next    = 0;	// chained fixed up later once all fixup locations are known
+				b->addend  = inlineAddend;
+				b->zero	   = 0;
+				b->ordinal = bindOrdinal;
+				assert(b->ordinal == bindOrdinal);
+				//fprintf(stderr, "%p bind, ord=%03d, addend=%lld %s\n", b, symOrdinal, accumulator, toTarget->name());
+			}
+			else {
+				//fprintf(stderr, "%p rebase, target=0x%08llX %s\n", p64, accumulator, toTarget->name());
+				uint64_t vmOffset = (accumulator - _options.machHeaderVmAddr());
+				uint64_t high8 = vmOffset >> 56;
+				vmOffset &= 0x00FFFFFFFFFFFFFFULL;
+				dyld_chained_ptr_arm64e_rebase* r = (dyld_chained_ptr_arm64e_rebase*)fixUpLocation;
+				r->auth    = 0;
+				r->bind    = 0;
+				r->next    = 0;	// chained fixed up later once all fixup locations are known
+				r->high8   = high8;
+				r->target  = vmOffset;
+				uint64_t reconstituted = (((uint64_t)(r->high8)) << 56) + r->target;
+				assert(reconstituted == (accumulator - _options.machHeaderVmAddr()));
+			}
+			break;
+		case DYLD_CHAINED_PTR_ARM64E_USERLAND24:
+			if ( isBind ) {
+				dyld_chained_ptr_arm64e_bind24* b = (dyld_chained_ptr_arm64e_bind24*)fixUpLocation;
+				b->auth    = 0;
+				b->bind    = 1;
+				b->next    = 0;	// chained fixed up later once all fixup locations are known
+				b->addend  = inlineAddend;
+				b->zero	   = 0;
+				b->ordinal = bindOrdinal;
+				assert(b->ordinal == bindOrdinal);
+				//fprintf(stderr, "%p bind, ord=%03d, addend=%lld %s\n", b, symOrdinal, accumulator, toTarget->name());
+			}
+			else {
+				//fprintf(stderr, "%p rebase, target=0x%08llX %s\n", p64, accumulator, toTarget->name());
+				uint64_t vmOffset = (accumulator - _options.machHeaderVmAddr());
+				uint64_t high8 = vmOffset >> 56;
+				vmOffset &= 0x00FFFFFFFFFFFFFFULL;
+				dyld_chained_ptr_arm64e_rebase* r = (dyld_chained_ptr_arm64e_rebase*)fixUpLocation;
+				r->auth    = 0;
+				r->bind    = 0;
+				r->next    = 0;	// chained fixed up later once all fixup locations are known
+				r->high8   = high8;
+				r->target  = vmOffset;
+				uint64_t reconstituted = (((uint64_t)(r->high8)) << 56) + r->target;
+				assert(reconstituted == (accumulator - _options.machHeaderVmAddr()));
+			}
+			break;
 		default:
 			throw("chained binds not implemented yet");
 	}
@@ -2909,9 +2948,12 @@ void OutputFile::setFixup64e(uint8_t* fixUpLocation, uint64_t accumulator, Fixup
 {
 	uint32_t bindOrdinal = 0;
 	uint64_t inlineAddend = 0;
-	bool isBind = needsBind(toTarget, &accumulator, &inlineAddend, &bindOrdinal);
+	bool isBind = needsBind(toTarget, true, &accumulator, &inlineAddend, &bindOrdinal);
 	switch ( chainedPointerFormat() ) {
 		case DYLD_CHAINED_PTR_ARM64E:
+		case DYLD_CHAINED_PTR_ARM64E_KERNEL:
+		case DYLD_CHAINED_PTR_ARM64E_USERLAND:
+		case DYLD_CHAINED_PTR_ARM64E_FIRMWARE:
 			if ( isBind ) {
 				dyld_chained_ptr_arm64e_auth_bind* b = (dyld_chained_ptr_arm64e_auth_bind*)fixUpLocation;
 				b->auth      = 1;
@@ -2922,6 +2964,7 @@ void OutputFile::setFixup64e(uint8_t* fixUpLocation, uint64_t accumulator, Fixup
 				b->diversity = authData.discriminator;
 				b->zero      = 0;
 				b->ordinal   = bindOrdinal;
+				assert(b->ordinal == bindOrdinal);
 				//fprintf(stderr, "%p bind, ord=%03d, addend=%lld %s\n", b, symOrdinal, accumulator, toTarget->name());
 			}
 			else {
@@ -2938,6 +2981,35 @@ void OutputFile::setFixup64e(uint8_t* fixUpLocation, uint64_t accumulator, Fixup
 				assert(r->target == vmOffset);
 			}
 			break;
+		case DYLD_CHAINED_PTR_ARM64E_USERLAND24:
+			if ( isBind ) {
+				dyld_chained_ptr_arm64e_auth_bind24* b = (dyld_chained_ptr_arm64e_auth_bind24*)fixUpLocation;
+				b->auth      = 1;
+				b->bind      = 1;
+				b->next      = 0;
+				b->key       = authData.key;
+				b->addrDiv   = authData.hasAddressDiversity;
+				b->diversity = authData.discriminator;
+				b->zero      = 0;
+				b->ordinal   = bindOrdinal;
+				assert(b->ordinal == bindOrdinal);
+				//fprintf(stderr, "%p bind, ord=%03d, addend=%lld %s\n", b, symOrdinal, accumulator, toTarget->name());
+			}
+			else {
+				//fprintf(stderr, "%p rebase, target=0x%08llX %s\n", p64, accumulator, toTarget->name());
+				dyld_chained_ptr_arm64e_auth_rebase* r = (dyld_chained_ptr_arm64e_auth_rebase*)fixUpLocation;
+				uint64_t vmOffset = (accumulator - _options.machHeaderVmAddr());
+				r->auth      = 1;
+				r->bind      = 0;
+				r->next      = 0;
+				r->key       = authData.key;
+				r->addrDiv   = authData.hasAddressDiversity;
+				r->diversity = authData.discriminator;
+				r->target    = vmOffset & 0xFFFFFFFF;
+				assert(r->target == vmOffset);
+			}
+			break;
+
 		default:
 			throw("chained binds not implemented yet");
 	}
@@ -2948,7 +3020,7 @@ void OutputFile::setFixup32(uint8_t* fixUpLocation, uint64_t accumulator, const 
 {
 	uint32_t bindOrdinal = 0;
 	uint64_t inlineAddend = 0;
-	bool isBind = needsBind(toTarget, &accumulator, &inlineAddend, &bindOrdinal);
+	bool isBind = needsBind(toTarget, false, &accumulator, &inlineAddend, &bindOrdinal);
 	switch ( chainedPointerFormat() ) {
 		case DYLD_CHAINED_PTR_32:
 			if ( isBind ) {
@@ -2957,6 +3029,7 @@ void OutputFile::setFixup32(uint8_t* fixUpLocation, uint64_t accumulator, const 
 				b->next    = 0;	// chained fixed up later once all fixup locations are known
 				b->addend  = inlineAddend;
 				b->ordinal = bindOrdinal;
+				assert(b->ordinal == bindOrdinal);
 				//fprintf(stderr, "%p bind, ord=%03d, addend=%lld %s\n", b, symOrdinal, accumulator, toTarget->name());
 			}
 			else {
@@ -3352,34 +3425,81 @@ void OutputFile::writeAtoms(ld::Internal& state, uint8_t* wholeBuffer)
 		}
 	}
 
-	if ( _options.makeChainedFixups() ) {
+	if ( _options.makeChainedFixups() && !state.cantUseChainedFixups  ) {
 
-		// for firmware, chains are not page based.  We just make the chains as long as possible
-		if ( chainedPointerFormat() == DYLD_CHAINED_PTR_32_FIRMWARE ) {
+		// for firmware, chains are not page based.  We just make the chains as long as possible within a segment
+		if ( !_options.dyldOrKernelLoadsOutput()) {
+			const uint16_t pointer_format = chainedPointerFormat();
 			std::vector<uint32_t> startOffsets;
 			uint8_t* prevLoc = nullptr;
+			uint8_t* imageLogicalStart = nullptr;
+			uint64_t imageStartAddress = 0;
+			const ChainedFixupSegInfo* lastSegInfo = nullptr;
 			for (ChainedFixupSegInfo& segInfo : _chainedFixupSegments) {
-				//fprintf(stderr, "0x%08llX 0x%08llX %s\n", segInfo.startAddr, segInfo.endAddr-segInfo.startAddr, segInfo.name);
+				//fprintf(stderr, "addr=0x%08llX, size=0x%08llX, fileOffset=0x%08X %s\n", segInfo.startAddr, segInfo.endAddr-segInfo.startAddr, segInfo.fileOffset, segInfo.name);
 				uint8_t* segBufferStart = &wholeBuffer[segInfo.fileOffset];
 				uint8_t* pageBufferStart = segBufferStart;
+				if ( (imageLogicalStart == nullptr) && (strcmp(segInfo.name, "__TEXT") == 0) ) {
+					imageLogicalStart = segBufferStart;
+					imageStartAddress = segInfo.startAddr;
+				}
 				for (ChainedFixupPageInfo& pageInfo : segInfo.pages) {
 					//fprintf(stderr, "   fixup count: %lu\n", pageInfo.fixupOffsets.size());
 					for (uint16_t pageOffset : pageInfo.fixupOffsets) {
+						//fprintf(stderr, "     pageOffset=0x%04X\n", pageOffset);
 						uint8_t* loc = (uint8_t*)pageBufferStart + pageOffset;
-						if ( prevLoc == nullptr ) {
-							startOffsets.push_back(loc-wholeBuffer);
+						//fprintf(stderr, "     loc=%p, prevLoc=%p, *loc=0x%016llX\n", loc, prevLoc, *((uint64_t*)loc));
+						uint32_t startOffset;
+						if ( _options.chainedFixupsSectionUseVMOffsets() )
+							startOffset = segInfo.startAddr+pageBufferStart-segBufferStart+pageOffset-imageStartAddress;
+						else
+							startOffset = loc-imageLogicalStart;
+						if ( _options.chainedFixupsSectionUseVMOffsets() && (lastSegInfo != &segInfo) ) {
+							// for preload always start new chain in each segment
+							startOffsets.push_back(startOffset);
+							lastSegInfo = &segInfo;
+						}
+						else if ( prevLoc == nullptr ) {
+							startOffsets.push_back(startOffset);
 						}
 						else {
 							uint64_t delta = (uint8_t*)loc - (uint8_t*)prevLoc;
-							if ( delta < 255 ) {
-								// delta fits in 6-bit size of "next" field
-								((dyld_chained_ptr_32_firmware_rebase*)prevLoc)->next = delta/4;
-							}
-							else {
-								// need to start new chain
-								//fprintf(stderr, "delta=%lld\n", delta);
-								((dyld_chained_ptr_32_firmware_rebase*)prevLoc)->next = 0;
-								startOffsets.push_back(loc-wholeBuffer);
+							switch (pointer_format) {
+								case DYLD_CHAINED_PTR_ARM64E_KERNEL:
+									if ( delta < 0x1FFF ) {
+										// delta fits in 11-bit size of "next" field
+										((dyld_chained_ptr_arm64e_rebase*)prevLoc)->next = delta/4;	// note: 4-byte stride
+									}
+									else {
+										// need to start new chain
+										((dyld_chained_ptr_arm64e_rebase*)prevLoc)->next = 0;
+										startOffsets.push_back(startOffset);
+									}
+									break;
+								case DYLD_CHAINED_PTR_64_OFFSET:
+									if ( delta < 0x3FFF ) {
+										// delta fits in 12-bit size of "next" field
+										((dyld_chained_ptr_64_rebase*)prevLoc)->next = delta/4;
+									}
+									else {
+										// need to start new chain
+										((dyld_chained_ptr_64_rebase*)prevLoc)->next = 0;
+										startOffsets.push_back(startOffset);
+									}
+									break;
+								case DYLD_CHAINED_PTR_32_FIRMWARE:
+									if ( delta < 255 ) {
+										// delta fits in 6-bit size of "next" field
+										((dyld_chained_ptr_32_firmware_rebase*)prevLoc)->next = delta/4;
+									}
+									else {
+										// need to start new chain
+										((dyld_chained_ptr_32_firmware_rebase*)prevLoc)->next = 0;
+										startOffsets.push_back(startOffset);
+									}
+									break;
+								default:
+									assert(0 && "unknown pointer format for chain starts");
 							}
 						}
 						prevLoc = loc;
@@ -3395,7 +3515,7 @@ void OutputFile::writeAtoms(ld::Internal& state, uint8_t* wholeBuffer)
 					if ( sect->size < startsSectionSize )
 						throwf("pre-computed __chain_starts section too small");
 					dyld_chained_starts_offsets* startsSection = (dyld_chained_starts_offsets*)(&wholeBuffer[sect->fileOffset]);
-					startsSection->pointer_format = DYLD_CHAINED_PTR_32_FIRMWARE;
+					startsSection->pointer_format = pointer_format;
 					startsSection->starts_count   = startOffsets.size();
 					memcpy(startsSection->chain_starts, &startOffsets[0], startsArraySize);
 				}
@@ -3420,12 +3540,20 @@ void OutputFile::writeAtoms(ld::Internal& state, uint8_t* wholeBuffer)
 							uint64_t delta = (uint8_t*)loc - (uint8_t*)prevLoc;
 							switch ( segInfo.pointerFormat ) {
 								case DYLD_CHAINED_PTR_ARM64E:
+								case DYLD_CHAINED_PTR_ARM64E_USERLAND:
+								case DYLD_CHAINED_PTR_ARM64E_USERLAND24:
 									((dyld_chained_ptr_arm64e_rebase*)prevLoc)->next = delta/8;
-									assert(((dyld_chained_ptr_arm64e_rebase*)prevLoc)->next == delta/8 && "next out of range");
+									assert((((dyld_chained_ptr_arm64e_rebase*)prevLoc)->next * 8) == delta && "next out of range");
+									break;
+								case DYLD_CHAINED_PTR_ARM64E_KERNEL:
+								case DYLD_CHAINED_PTR_ARM64E_FIRMWARE:
+									((dyld_chained_ptr_arm64e_rebase*)prevLoc)->next = delta/4;
+									assert((((dyld_chained_ptr_arm64e_rebase*)prevLoc)->next * 4) == delta && "next out of range");
 									break;
 								case DYLD_CHAINED_PTR_64:
+								case DYLD_CHAINED_PTR_64_OFFSET:
 									((dyld_chained_ptr_64_rebase*)prevLoc)->next = delta/4;
-									assert(((dyld_chained_ptr_64_rebase*)prevLoc)->next == delta/4 && "next out of range");
+									assert((((dyld_chained_ptr_64_rebase*)prevLoc)->next * 4) == delta && "next out of range");
 									break;
 								case DYLD_CHAINED_PTR_32:
 									chain32bitPointers((dyld_chained_ptr_32_rebase*)prevLoc, (dyld_chained_ptr_32_rebase*)loc,
@@ -3447,6 +3575,7 @@ void OutputFile::writeAtoms(ld::Internal& state, uint8_t* wholeBuffer)
 						dyld_chained_fixups_header*     header    = (dyld_chained_fixups_header*)chainHeader;
 						dyld_chained_starts_in_image*   chains    = (dyld_chained_starts_in_image*)((uint8_t*)header + header->starts_offset);
 						dyld_chained_starts_in_segment* segChains = (dyld_chained_starts_in_segment*)((uint8_t*)chains + chains->seg_info_offset[segIndex]);
+						uint32_t						maxOverFlowCount = (segChains->size - offsetof(dyld_chained_starts_in_segment, page_start[segChains->page_count]))/sizeof(uint16_t);
 						for (uint16_t extraStart : pageInfo.chainOverflows ) {
 							if ( (segChains->page_start[pageIndex] & DYLD_CHAINED_PTR_START_MULTI) == 0 ) {
 								uint16_t first = segChains->page_start[pageIndex];
@@ -3458,6 +3587,7 @@ void OutputFile::writeAtoms(ld::Internal& state, uint8_t* wholeBuffer)
 							else
 								segChains->page_start[nextOverflowSlot++] = extraStart;
 						}
+						assert(nextOverflowSlot <= maxOverFlowCount);
 					}
 					pageBufferStart += segInfo.pageSize;
 					++pageIndex;
@@ -3508,40 +3638,43 @@ void OutputFile::chain32bitPointers(dyld_chained_ptr_32_rebase* prevLoc, dyld_ch
 	}
 
 	// delta is too far, see if we can steal non-pointer values
-	bool chainPossible = false;
-	dyld_chained_ptr_32_rebase* endZone = &finalLoc[-31];
-	for (dyld_chained_ptr_32_rebase* p = prevLoc; p != nullptr; p = farthestChainableLocation(p) ) {
-		if ( p >= endZone ) {
-			chainPossible = true;
-			break;
+	// <rdar://problem/70021762> Turn off stealing non-pointers for 32-bits chains
+	if  ( _options.stealPointersFixupChains() ) {
+		bool chainPossible = false;
+		dyld_chained_ptr_32_rebase* endZone = &finalLoc[-31];
+		for (dyld_chained_ptr_32_rebase* p = prevLoc; p != nullptr; p = farthestChainableLocation(p) ) {
+			if ( p >= endZone ) {
+				chainPossible = true;
+				break;
+			}
+		}
+		if ( chainPossible ) {
+			uint32_t bias = (0x04000000+_chainedFixupBinds.maxRebase())/2;
+			dyld_chained_ptr_32_rebase* curLoc = farthestChainableLocation(prevLoc);
+			// start location is a real pointer, so just set ->next
+			// all subsequent locations are non-pointers co-opted into the chain
+			uint32_t firstSteps = curLoc - prevLoc;
+			prevLoc->next = firstSteps;
+			while (curLoc < endZone) {
+				prevLoc = curLoc;
+				curLoc = farthestChainableLocation(prevLoc);
+				uint32_t steps = curLoc - prevLoc;
+				uint32_t value = *((uint32_t*)prevLoc);
+				prevLoc->bind = 0;
+				prevLoc->next = steps;
+				prevLoc->target = value + bias;
+				assert(prevLoc->next == steps);
+			}
+			uint32_t lastSteps = finalLoc - curLoc;
+			uint32_t value = *((uint32_t*)curLoc);
+			curLoc->bind = 0;
+			curLoc->next = lastSteps;
+			curLoc->target = value + bias;
+			assert(curLoc->next == lastSteps);
+			return;
 		}
 	}
-	if ( chainPossible ) {
-		uint32_t bias = (0x04000000+_chainedFixupBinds.maxRebase())/2;
-		dyld_chained_ptr_32_rebase* curLoc = farthestChainableLocation(prevLoc);
-		// start location is a real pointer, so just set ->next
-		// all subsequent locations are non-pointers co-opted into the chain
-		uint32_t firstSteps = curLoc - prevLoc;
-		prevLoc->next = firstSteps;
-		while (curLoc < endZone) {
-			prevLoc = curLoc;
-			curLoc = farthestChainableLocation(prevLoc);
-			uint32_t steps = curLoc - prevLoc;
-			uint32_t value = *((uint32_t*)prevLoc);
-			prevLoc->bind = 0;
-			prevLoc->next = steps;
-			prevLoc->target = value + bias;
-			assert(prevLoc->next == steps);
-		}
-		uint32_t lastSteps = finalLoc - curLoc;
-		uint32_t value = *((uint32_t*)curLoc);
-		curLoc->bind = 0;
-		curLoc->next = lastSteps;
-		curLoc->target = value + bias;
-		assert(curLoc->next == lastSteps);
-		return;
-	}
-	
+
 	// no way to make chain, add a new chain start
 	uint16_t newChainStartOffset = (uint8_t*)finalLoc - pageBufferStart;
 	ChainedFixupPageInfo& pageInfo = segInfo.pages[pageIndex];
@@ -3699,11 +3832,14 @@ void OutputFile::writeOutputFile(ld::Internal& state)
 	if ( stat(_options.outputFilePath(), &stat_buf) != -1 ) {
 		if (stat_buf.st_mode & S_IFREG) {
 			outputIsRegularFile = true;
+
 			// <rdar://problem/12264302> Don't use mmap on non-hfs volumes
 			struct statfs fsInfo;
 			if ( statfs(_options.outputFilePath(), &fsInfo) != -1 ) {
+				// <rdar://problem/72136053>
+				(void)unlink(_options.outputFilePath());
+
 				if ( (strcmp(fsInfo.f_fstypename, "hfs") == 0) || (strcmp(fsInfo.f_fstypename, "apfs") == 0) ) {
-					(void)unlink(_options.outputFilePath());
 					outputIsMappableFile = true;
 				}
 			}
@@ -3722,17 +3858,31 @@ void OutputFile::writeOutputFile(ld::Internal& state)
 		char dirPath[PATH_MAX];
 		strcpy(dirPath, _options.outputFilePath());
 		char* end = strrchr(dirPath, '/');
-		if ( end != NULL ) {
+		if ( end != NULL )
 			end[1] = '\0';
-			struct statfs fsInfo;
-			if ( statfs(dirPath, &fsInfo) != -1 ) {
-				if ( (strcmp(fsInfo.f_fstypename, "hfs") == 0) || (strcmp(fsInfo.f_fstypename, "apfs") == 0) ) {
-					outputIsMappableFile = true;
-				}
+		else
+			strcpy(dirPath, "./");	// if no slashes path, then writing to cwd
+		struct statfs fsInfo;
+		if ( statfs(dirPath, &fsInfo) != -1 ) {
+			if ( (strcmp(fsInfo.f_fstypename, "hfs") == 0) || (strcmp(fsInfo.f_fstypename, "apfs") == 0) ) {
+				outputIsMappableFile = true;
 			}
 		}
 	}
-	
+#if __arm64__
+	// <rdar://problem/66598213> work around VM limitation on Apple Silicon and use write() instead of mmap() to produce output file
+	outputIsMappableFile = false;
+#elif __x86_64__
+#ifndef kIsTranslated
+   #define kIsTranslated  0x4000000000000000ULL
+#endif
+	// <rdar://problem/70505306>
+	bool isTranslated = ((*(uint64_t*)_COMM_PAGE_CPU_CAPABILITIES64) & kIsTranslated);
+	if ( isTranslated ) {
+		outputIsMappableFile = false;
+	}
+#endif
+
 	//fprintf(stderr, "outputIsMappableFile=%d, outputIsRegularFile=%d, path=%s\n", outputIsMappableFile, outputIsRegularFile, _options.outputFilePath());
 	
 	int fd;
@@ -3795,7 +3945,12 @@ void OutputFile::writeOutputFile(ld::Internal& state)
 	if ( _options.UUIDMode() == Options::kUUIDContent )
 		computeContentUUID(state, wholeBuffer);
 
+	// now that file output buffer is complete, if codesigned, compute each page's hash
+	if ( _hasCodeSignature )
+		_codeSignatureAtom->hash(wholeBuffer);
+
 	if ( outputIsRegularFile && outputIsMappableFile ) {
+		::close(fd);
 		if ( ::chmod(tmpOutput, permissions) == -1 ) {
 			unlink(tmpOutput);
 			throwf("can't set permissions on output file: %s, errno=%d", tmpOutput, errno);
@@ -3806,7 +3961,7 @@ void OutputFile::writeOutputFile(ld::Internal& state)
 		}
 	} 
 	else {
-		if ( ::write(fd, wholeBuffer, _fileSize) == -1 ) {
+		if ( ld::utils::write64(fd, wholeBuffer, _fileSize) == -1 ) {
 			throwf("can't write to output file: %s, errno=%d", _options.outputFilePath(), errno);
 		}
 		sDescriptorOfPathToRemove = -1;
@@ -3860,13 +4015,17 @@ private:
 	const std::set<const ld::Atom*>&  _set;
 };
 
+static bool shouldSetMachoSectionIndex(const ld::Internal::FinalSection* sect)
+{
+	return !sect->isSectionHidden() && (sect->type() != ld::Section::typeTentativeDefs);
+}
 
 void OutputFile::buildSymbolTable(ld::Internal& state)
 {
 	unsigned int machoSectionIndex = 0;
 	for (std::vector<ld::Internal::FinalSection*>::iterator sit = state.sections.begin(); sit != state.sections.end(); ++sit) {
 		ld::Internal::FinalSection* sect = *sit;
-		bool setMachoSectionIndex = !sect->isSectionHidden() && (sect->type() != ld::Section::typeTentativeDefs);
+		bool setMachoSectionIndex = shouldSetMachoSectionIndex(sect);
 		if ( setMachoSectionIndex ) 
 			++machoSectionIndex;
 		for (std::vector<const ld::Atom*>::iterator ait = sect->atoms.begin(); ait != sect->atoms.end(); ++ait) {
@@ -3884,6 +4043,9 @@ void OutputFile::buildSymbolTable(ld::Internal& state)
 			if ( _options.outputKind() == Options::kObjectFile ) {
 				if ( (_options.architecture() == CPU_TYPE_X86_64)
 				  || (_options.architecture() == CPU_TYPE_ARM64)
+#if SUPPORT_ARCH_arm64_32
+				  || (_options.architecture() == CPU_TYPE_ARM64_32)
+#endif
 				   ) {
 					// x86_64 .o files need labels on anonymous literal strings
 					if ( (sect->type() == ld::Section::typeCString) && (atom->combine() == ld::Atom::combineByNameAndContent) ) {
@@ -3933,8 +4095,11 @@ void OutputFile::buildSymbolTable(ld::Internal& state)
 					_importedAtoms.push_back(atom);
 				// scope of proxies are usually linkage unit, so done
 				// if scope is global, we need to re-export it too
-				if ( atom->scope() == ld::Atom::scopeGlobal )
+				if ( atom->scope() == ld::Atom::scopeGlobal ) {
 					_exportedAtoms.push_back(atom);
+					// <rdar://problem/69955069> re-exported weak-def symbol should set MH_WEAK_DEFINES
+					this->reExportsWeakDefSymbols = true;
+				}
 				continue;
 			}
 			if ( atom->symbolTableInclusion() == ld::Atom::symbolTableNotInFinalLinkedImages ) {
@@ -3951,11 +4116,11 @@ void OutputFile::buildSymbolTable(ld::Internal& state)
 			
 			if ( (atom->definition() == ld::Atom::definitionTentative) && (_options.outputKind() == Options::kObjectFile) ) {
 				if ( _options.makeTentativeDefinitionsReal() ) {
-					// -r -d turns tentative defintions into real def
+					// -r -d turns tentative definitions into real def
 					_exportedAtoms.push_back(atom);
 				}
 				else {
-					// in mach-o object files tentative defintions are stored like undefined symbols
+					// in mach-o object files tentative definitions are stored like undefined symbols
 					_importedAtoms.push_back(atom);
 				}
 				continue;
@@ -4156,7 +4321,7 @@ void OutputFile::addPreloadLinkEdit(ld::Internal& state)
 				indirectSymbolTableSection = state.addAtom(*_indirectSymbolTableAtom);
 				_symbolTableAtom = new SymbolTableAtom<x86_64>(_options, state, *this);
 				symbolTableSection = state.addAtom(*_symbolTableAtom);
-				_stringPoolAtom = new StringPoolAtom(_options, state, *this, 4);
+				_stringPoolAtom = new StringPoolAtom(_options, state, *this, 8);
 				stringPoolSection = state.addAtom(*_stringPoolAtom);
 			}
 			break;
@@ -4203,6 +4368,30 @@ void OutputFile::addPreloadLinkEdit(ld::Internal& state)
 				_indirectSymbolTableAtom = new IndirectSymbolTableAtom<arm64>(_options, state, *this);
 				indirectSymbolTableSection = state.addAtom(*_indirectSymbolTableAtom);
 				_symbolTableAtom = new SymbolTableAtom<arm64>(_options, state, *this);
+				symbolTableSection = state.addAtom(*_symbolTableAtom);
+				_stringPoolAtom = new StringPoolAtom(_options, state, *this, 8);
+				stringPoolSection = state.addAtom(*_stringPoolAtom);
+			}
+			break;
+#endif
+#if SUPPORT_ARCH_arm64_32
+		case CPU_TYPE_ARM64_32:
+			if ( _hasLocalRelocations ) {
+				_localRelocsAtom = new LocalRelocationsAtom<arm64_32>(_options, state, *this);
+				localRelocationsSection = state.addAtom(*_localRelocsAtom);
+			}
+			if ( _hasExternalRelocations ) {
+				_externalRelocsAtom = new ExternalRelocationsAtom<arm64_32>(_options, state, *this);
+				externalRelocationsSection = state.addAtom(*_externalRelocsAtom);
+			}
+			if ( _hasDataInCodeInfo ) {
+				_dataInCodeAtom = new DataInCodeAtom<x86_64>(_options, state, *this);
+				dataInCodeSection = state.addAtom(*_dataInCodeAtom);
+			}
+			if ( _hasSymbolTable ) {
+				_indirectSymbolTableAtom = new IndirectSymbolTableAtom<arm64_32>(_options, state, *this);
+				indirectSymbolTableSection = state.addAtom(*_indirectSymbolTableAtom);
+				_symbolTableAtom = new SymbolTableAtom<arm64_32>(_options, state, *this);
 				symbolTableSection = state.addAtom(*_symbolTableAtom);
 				_stringPoolAtom = new StringPoolAtom(_options, state, *this, 4);
 				stringPoolSection = state.addAtom(*_stringPoolAtom);
@@ -4290,6 +4479,10 @@ void OutputFile::addLinkEdit(ld::Internal& state)
 				_stringPoolAtom = new StringPoolAtom(_options, state, *this, 4);
 				stringPoolSection = state.addAtom(*_stringPoolAtom);
 			}
+			if ( _hasCodeSignature ) {
+				_codeSignatureAtom = new CodeSignatureAtom(_options, state, *this);
+				codeSignatureSection = state.addAtom(*_codeSignatureAtom);
+			}
 			break;
 #endif
 #if SUPPORT_ARCH_x86_64
@@ -4358,6 +4551,10 @@ void OutputFile::addLinkEdit(ld::Internal& state)
 				indirectSymbolTableSection = state.addAtom(*_indirectSymbolTableAtom);
 				_stringPoolAtom = new StringPoolAtom(_options, state, *this, 8);
 				stringPoolSection = state.addAtom(*_stringPoolAtom);
+			}
+			if ( _hasCodeSignature ) {
+				_codeSignatureAtom = new CodeSignatureAtom(_options, state, *this);
+				codeSignatureSection = state.addAtom(*_codeSignatureAtom);
 			}
 			break;
 #endif
@@ -4428,6 +4625,10 @@ void OutputFile::addLinkEdit(ld::Internal& state)
 				_stringPoolAtom = new StringPoolAtom(_options, state, *this, 4);
 				stringPoolSection = state.addAtom(*_stringPoolAtom);
 			}
+			if ( _hasCodeSignature ) {
+				_codeSignatureAtom = new CodeSignatureAtom(_options, state, *this);
+				codeSignatureSection = state.addAtom(*_codeSignatureAtom);
+			}
 			break;
 #endif
 #if SUPPORT_ARCH_arm64
@@ -4494,8 +4695,85 @@ void OutputFile::addLinkEdit(ld::Internal& state)
 			if ( _hasSymbolTable ) {
 				_indirectSymbolTableAtom = new IndirectSymbolTableAtom<arm64>(_options, state, *this);
 				indirectSymbolTableSection = state.addAtom(*_indirectSymbolTableAtom);
+				_stringPoolAtom = new StringPoolAtom(_options, state, *this, 8);
+				stringPoolSection = state.addAtom(*_stringPoolAtom);
+			}
+			if ( _hasCodeSignature ) {
+				_codeSignatureAtom = new CodeSignatureAtom(_options, state, *this);
+				codeSignatureSection = state.addAtom(*_codeSignatureAtom);
+			}
+			break;
+#endif
+#if SUPPORT_ARCH_arm64_32
+		case CPU_TYPE_ARM64_32:
+			if ( _hasSectionRelocations ) {
+				_sectionsRelocationsAtom = new SectionRelocationsAtom<arm64_32>(_options, state, *this);
+				sectionRelocationsSection = state.addAtom(*_sectionsRelocationsAtom);
+			}
+			if ( _hasChainedFixups ) {
+				_chainedInfoAtom = new ChainedInfoAtom<arm64_32>(_options, state, *this);
+				chainInfoSection = state.addAtom(*_chainedInfoAtom);
+			}
+			if ( _hasExportsTrie ) {
+				_exportInfoAtom = new ExportInfoAtom<arm64_32>(_options, state, *this);
+				exportSection = state.addAtom(*_exportInfoAtom);
+			}
+			if ( _hasDyldInfo ) {
+				_rebasingInfoAtom = new RebaseInfoAtom<arm64_32>(_options, state, *this);
+				rebaseSection = state.addAtom(*_rebasingInfoAtom);
+				
+				_bindingInfoAtom = new BindingInfoAtom<arm64_32>(_options, state, *this);
+				bindingSection = state.addAtom(*_bindingInfoAtom);
+				
+				_weakBindingInfoAtom = new WeakBindingInfoAtom<arm64_32>(_options, state, *this);
+				weakBindingSection = state.addAtom(*_weakBindingInfoAtom);
+				
+				_lazyBindingInfoAtom = new LazyBindingInfoAtom<arm64_32>(_options, state, *this);
+				lazyBindingSection = state.addAtom(*_lazyBindingInfoAtom);
+				
+				_exportInfoAtom = new ExportInfoAtom<arm64_32>(_options, state, *this);
+				exportSection = state.addAtom(*_exportInfoAtom);
+			}
+			if ( _hasLocalRelocations ) {
+				_localRelocsAtom = new LocalRelocationsAtom<arm64_32>(_options, state, *this);
+				localRelocationsSection = state.addAtom(*_localRelocsAtom);
+			}
+			if  ( _hasSplitSegInfo ) {
+				if ( _options.sharedRegionEncodingV2() )
+					_splitSegInfoAtom = new SplitSegInfoV2Atom<arm64_32>(_options, state, *this);
+				else
+					_splitSegInfoAtom = new SplitSegInfoV1Atom<arm64_32>(_options, state, *this);
+				splitSegInfoSection = state.addAtom(*_splitSegInfoAtom);
+			}
+			if ( _hasFunctionStartsInfo ) {
+				_functionStartsAtom = new FunctionStartsAtom<arm64_32>(_options, state, *this);
+				functionStartsSection = state.addAtom(*_functionStartsAtom);
+			}
+			if ( _hasDataInCodeInfo ) {
+				_dataInCodeAtom = new DataInCodeAtom<arm64_32>(_options, state, *this);
+				dataInCodeSection = state.addAtom(*_dataInCodeAtom);
+			}
+			if ( _hasOptimizationHints ) {
+				_optimizationHintsAtom = new OptimizationHintsAtom<arm64_32>(_options, state, *this);
+				optimizationHintsSection = state.addAtom(*_optimizationHintsAtom);
+			}
+			if ( _hasSymbolTable ) {
+				_symbolTableAtom = new SymbolTableAtom<arm64_32>(_options, state, *this);
+				symbolTableSection = state.addAtom(*_symbolTableAtom);
+			}
+			if ( _hasExternalRelocations ) {
+				_externalRelocsAtom = new ExternalRelocationsAtom<arm64_32>(_options, state, *this);
+				externalRelocationsSection = state.addAtom(*_externalRelocsAtom);
+			}
+			if ( _hasSymbolTable ) {
+				_indirectSymbolTableAtom = new IndirectSymbolTableAtom<arm64_32>(_options, state, *this);
+				indirectSymbolTableSection = state.addAtom(*_indirectSymbolTableAtom);
 				_stringPoolAtom = new StringPoolAtom(_options, state, *this, 4);
 				stringPoolSection = state.addAtom(*_stringPoolAtom);
+			}
+			if ( _hasCodeSignature ) {
+				_codeSignatureAtom = new CodeSignatureAtom(_options, state, *this);
+				codeSignatureSection = state.addAtom(*_codeSignatureAtom);
 			}
 			break;
 #endif
@@ -4522,6 +4800,12 @@ void OutputFile::addLoadCommands(ld::Internal& state)
 #if SUPPORT_ARCH_arm64
 		case CPU_TYPE_ARM64:
 			_headersAndLoadCommandAtom = new HeaderAndLoadCommandsAtom<arm64>(_options, state, *this);
+			headerAndLoadCommandsSection = state.addAtom(*_headersAndLoadCommandAtom);
+			break;
+#endif
+#if SUPPORT_ARCH_arm64_32
+		case CPU_TYPE_ARM64_32:
+			_headersAndLoadCommandAtom = new HeaderAndLoadCommandsAtom<arm64_32>(_options, state, *this);
 			headerAndLoadCommandsSection = state.addAtom(*_headersAndLoadCommandAtom);
 			break;
 #endif
@@ -4570,6 +4854,54 @@ uint32_t OutputFile::dylibToOrdinal(const ld::dylib::File* dylib) const
 
 void OutputFile::buildDylibOrdinalMapping(ld::Internal& state)
 {
+	std::map<const char *,  generic::dylib::File*> syntheticDylibs;
+	std::set<const generic::dylib::File*> potentiallyDeadDylibs;
+
+	// Scan through all import atoms looking for redirects
+	for (const ld::Internal::FinalSection* sect : state.sections) {
+		if ( sect->type() != ld::Section::typeImportProxies) { continue; }
+		for (const ld::Atom* rawAtom: sect->atoms) {
+			auto atom = dynamic_cast<const generic::dylib::ExportAtom*>(rawAtom);
+			if (!atom || !atom->installname()) { continue; }
+
+			generic::dylib::File* newFile = nullptr;
+			auto i = syntheticDylibs.find(atom->installname());
+			if (i == syntheticDylibs.end()) {
+				auto file = dynamic_cast<const generic::dylib::File*>(atom->file());
+				newFile = file->createSyntheticDylib(atom->installname(), atom->compat_version());
+				syntheticDylibs[atom->installname()] = newFile;
+				potentiallyDeadDylibs.insert(file);
+			} else {
+				newFile = i->second;
+			}
+			newFile->addExportedSymbol(atom);
+		}
+	}
+
+	// CHeck back through the symbol sources to see if anything still points at them, and remove them from potentially dead dylibs
+	for (const ld::Internal::FinalSection* sect : state.sections) {
+		if ( sect->type() != ld::Section::typeImportProxies) { continue; }
+		for (const ld::Atom* rawAtom: sect->atoms) {
+			auto atom = dynamic_cast<const generic::dylib::ExportAtom*>(rawAtom);
+			if ( !atom ) continue;
+			auto file = dynamic_cast<const generic::dylib::File*>(atom->file());
+			potentiallyDeadDylibs.erase(file);
+		}
+	}
+
+	std::vector<ld::dylib::File*> dylibs;
+	for (auto& dylib : state.dylibs) {
+		// Any dylibs still in potentiallyDeadDylibs are dead, filter those out
+		auto file = dynamic_cast<const generic::dylib::File*>(dylib);
+		if (potentiallyDeadDylibs.count(file) != 0) { continue; }
+		dylibs.push_back(dylib);
+	}
+
+	// Add any synthetic dylibs to the end of the load list
+	for (auto& dylib : syntheticDylibs) {
+		dylibs.push_back(dylib.second);
+	}
+
 	// count non-public re-exported dylibs
 	unsigned int nonPublicReExportCount = 0;
 	for (std::vector<ld::dylib::File*>::iterator it = state.dylibs.begin(); it != state.dylibs.end(); ++it) {
@@ -4577,12 +4909,11 @@ void OutputFile::buildDylibOrdinalMapping(ld::Internal& state)
 		if ( aDylib->willBeReExported() && ! aDylib->hasPublicInstallName() ) 
 			++nonPublicReExportCount;
 	}
-	
+
 	// look at each dylib supplied in state
 	__block std::unordered_map<const char*, ld::dylib::File*, CStringHash, CStringEquals> allReExports;
 	bool hasReExports = false;
-	bool haveLazyDylibs = false;
-	for (std::vector<ld::dylib::File*>::iterator it = state.dylibs.begin(); it != state.dylibs.end(); ++it) {
+	for (std::vector<ld::dylib::File*>::iterator it = dylibs.begin(); it != dylibs.end(); ++it) {
 		ld::dylib::File* aDylib = *it;
 		int ordinal;
 		if ( aDylib == state.bundleLoader ) {
@@ -4591,10 +4922,6 @@ void OutputFile::buildDylibOrdinalMapping(ld::Internal& state)
 		else if ( this->hasOrdinalForInstallPath(aDylib->installPath(), &ordinal) ) {
 			// already have a dylib with that install path, map all uses to that ordinal
 			_dylibToOrdinal[aDylib] = ordinal;
-		}
-		else if ( aDylib->willBeLazyLoadedDylib() ) {
-			// all lazy dylib need to be at end of ordinals
-			haveLazyDylibs = true;
 		}
 		else if ( aDylib->willBeReExported() && ! aDylib->hasPublicInstallName() && (nonPublicReExportCount >= 2) ) {
 			_dylibsToLoad.push_back(aDylib);
@@ -4620,29 +4947,8 @@ void OutputFile::buildDylibOrdinalMapping(ld::Internal& state)
 			});
 		}
 	}
-	if ( haveLazyDylibs ) {
-		// second pass to determine ordinals for lazy loaded dylibs
-		for (std::vector<ld::dylib::File*>::iterator it = state.dylibs.begin(); it != state.dylibs.end(); ++it) {
-			ld::dylib::File* aDylib = *it;
-			if ( aDylib->willBeLazyLoadedDylib() ) {
-				int ordinal;
-				if ( this->hasOrdinalForInstallPath(aDylib->installPath(), &ordinal) ) {
-					// already have a dylib with that install path, map all uses to that ordinal
-					_dylibToOrdinal[aDylib] = ordinal;
-				}
-				else {
-					// first time this install path seen, create new ordinal
-					_dylibsToLoad.push_back(aDylib);
-					_dylibToOrdinal[aDylib] = _dylibsToLoad.size();
-				}
-			}
-		}
-	}
+
 	_noReExportedDylibs = !hasReExports;
-	//fprintf(stderr, "dylibs:\n");
-	//for (std::map<const ld::dylib::File*, int>::const_iterator it = _dylibToOrdinal.begin(); it != _dylibToOrdinal.end(); ++it) {
-	//	fprintf(stderr, " %p ord=%u, install_name=%s\n",it->first, it->second, it->first->installPath());
-	//}
 }
 
 uint32_t OutputFile::lazyBindingInfoOffsetForLazyPointerAddress(uint64_t lpAddress)
@@ -4655,7 +4961,7 @@ void OutputFile::setLazyBindingInfoOffset(uint64_t lpAddress, uint32_t lpInfoOff
 	_lazyPointerAddressToInfoOffset[lpAddress] = lpInfoOffset;
 }
 
-int OutputFile::compressedOrdinalForAtom(const ld::Atom* target)
+int OutputFile::compressedOrdinalForAtom(const ld::Atom* target) const
 {
 	// flat namespace images use zero for all ordinals
 	if ( _options.nameSpace() != Options::kTwoLevelNameSpace )
@@ -4668,7 +4974,7 @@ int OutputFile::compressedOrdinalForAtom(const ld::Atom* target)
 	// regular ordinal
 	const ld::dylib::File* dylib = dynamic_cast<const ld::dylib::File*>(target->file());
 	if ( dylib != NULL ) {
-		std::map<const ld::dylib::File*, int>::iterator pos = _dylibToOrdinal.find(dylib);
+		std::map<const ld::dylib::File*, int>::const_iterator pos = _dylibToOrdinal.find(dylib);
 		if ( pos != _dylibToOrdinal.end() )
 			return pos->second;
 		assert(0 && "dylib not assigned ordinal");
@@ -4676,7 +4982,7 @@ int OutputFile::compressedOrdinalForAtom(const ld::Atom* target)
 	
 	// handle undefined dynamic_lookup
 	if ( _options.undefinedTreatment() == Options::kUndefinedDynamicLookup ) {
-		if ( _options.sharedRegionEligible() )
+		if ( _options.sharedRegionEligible() && (_options.outputKind() != Options::kKextBundle) )
 			throwf("-undefined dynamic_lookup cannot be used to find '%s' in dylib in dyld shared cache", target->name());
 		return BIND_SPECIAL_DYLIB_FLAT_LOOKUP;
 	}
@@ -4804,15 +5110,12 @@ void OutputFile::generateLinkEditInfo(ld::Internal& state)
 		if ( _options.makeEncryptable() && (strcmp(sect->segmentName(), "__TEXT") == 0) && (strcmp(sect->sectionName(), "__oslogstring") != 0) ) {
 			_encryptedTEXTendOffset = pageAlign(sect->fileOffset + sect->size);
 		}
-		bool objc1ClassRefSection = ( (sect->type() == ld::Section::typeCStringPointer) 
-									&& (strcmp(sect->sectionName(), "__cls_refs") == 0)
-									&& (strcmp(sect->segmentName(), "__OBJC") == 0) );
 		for (std::vector<const ld::Atom*>::iterator ait = sect->atoms.begin(); ait != sect->atoms.end(); ++ait) {
 			const ld::Atom*		atom = *ait;
 			
 			// Record regular atoms that override a dylib's weak definitions 
 			if ( (atom->scope() == ld::Atom::scopeGlobal) && atom->overridesDylibsWeakDef() ) {
-				if ( _options.makeCompressedDyldInfo() ) {
+				if ( _options.makeCompressedDyldInfo() && !state.cantUseChainedFixups ) {
 					uint8_t wtype = BIND_TYPE_OVERRIDE_OF_WEAKDEF_IN_DYLIB;
 					bool nonWeakDef = (atom->combine() == ld::Atom::combineNever);
 					// Don't push weak binding info for threaded bind.
@@ -4921,11 +5224,11 @@ void OutputFile::generateLinkEditInfo(ld::Internal& state)
 													target, minusTarget, targetAddend, minusTargetAddend);
 						}
 						else {
-							if ( _options.makeChainedFixups() ) {
+							if ( _options.makeChainedFixups() && !state.cantUseChainedFixups ) {
 								addChainedFixupLocation(state, sect, atom, fixupWithTarget, fixupWithMinusTarget, fixupWithStore,
 														target, minusTarget, targetAddend, minusTargetAddend);
 							}
-							else if ( _options.makeCompressedDyldInfo() ) {
+							else if ( _options.makeCompressedDyldInfo() || state.cantUseChainedFixups ) {
 #if SUPPORT_ARCH_arm64e
 								if ( _options.sharedRegionEligible() && (fixupWithAuthData != NULL) ) {
 									switch ( fixupWithAuthData->u.authData.key ) {
@@ -4951,15 +5254,12 @@ void OutputFile::generateLinkEditInfo(ld::Internal& state)
 							}
 						}
 					}
-					else if ( objc1ClassRefSection && (target != NULL) && (fixupWithStore == NULL) ) {
-						// check for class refs to lazy loaded dylibs
-						const ld::dylib::File* dylib = dynamic_cast<const ld::dylib::File*>(target->file());
-						if ( (dylib != NULL) && dylib->willBeLazyLoadedDylib() )
-							throwf("illegal class reference to %s in lazy loaded dylib %s", target->name(), dylib->path());
-					}
 				}
 			}
 		}
+	}
+	if ( _hasUnalignedFixup && (_options.unalignedPointerTreatment() == Options::kUnalignedPointerError) ) {
+		throw "unaligned pointer(s)";
 	}
 }
 
@@ -4978,24 +5278,76 @@ bool OutputFile::isFixupForChain(ld::Fixup::iterator fit)
 uint16_t OutputFile::chainedPointerFormat() const
 {
 #if SUPPORT_ARCH_arm64e
-	if ( _options.architecture() == CPU_TYPE_ARM64 && _options.subArchitecture() == CPU_SUBTYPE_ARM64E )
-		return DYLD_CHAINED_PTR_ARM64E;
+	if ( _options.architecture() == CPU_TYPE_ARM64 && _options.subArchitecture() == CPU_SUBTYPE_ARM64E ) {
+		if ( _options.isKernel() || (_options.outputKind() == Options::kKextBundle) )
+			return DYLD_CHAINED_PTR_ARM64E_KERNEL;
+		else if ( _options.dyldLoadsOutput() ) {
+			if ( _options.makeChainedFixups() ) {
+				if ( _importedSymbolsCount > 0xFFFFFF )
+					throwf("too many symbols (%lu) max %d", _importedSymbolsCount, 0xFFFFFF);
+				// Only use 24-bit binds if needed
+				if ( _importedSymbolsCount > 0xFFFF || _options.platforms().minOS(ld::version2021Fall) ) {
+					return DYLD_CHAINED_PTR_ARM64E_USERLAND24;
+				}
+				else {
+					return DYLD_CHAINED_PTR_ARM64E;
+				}
+			}
+			else
+				return DYLD_CHAINED_PTR_ARM64E;
+		}
+		else {
+			return DYLD_CHAINED_PTR_ARM64E_KERNEL; // preload or static arm64 use 4-byte stride with vmoffset in __chain_starts
+		}
+	}
 #endif
-	if ( _options.architecture() & CPU_ARCH_ABI64)
-	 	return DYLD_CHAINED_PTR_64;
-	else if ( _options.dyldLoadsOutput() )
+	if ( _options.architecture() & CPU_ARCH_ABI64) {
+		if ( _options.isKernel() || (_options.outputKind() == Options::kKextBundle) )
+			return DYLD_CHAINED_PTR_64_OFFSET;
+		else if ( _options.dyldLoadsOutput() ) {
+			if ( _importedSymbolsCount > 0xFFFFFF )
+				throwf("too many symbols (%lu) max %d", _importedSymbolsCount, 0xFFFFFF);
+			if ( _options.makeChainedFixups() ) {
+				if ( _options.platforms().minOS(ld::version2021Fall) ) {
+					return DYLD_CHAINED_PTR_64_OFFSET;
+				}
+				else {
+					return DYLD_CHAINED_PTR_64;
+				}
+			}
+			else
+				return DYLD_CHAINED_PTR_64;
+		}
+		else {
+			return DYLD_CHAINED_PTR_64_OFFSET;
+		}
+	}
+	else if ( _options.dyldLoadsOutput() ) {
+		if ( _importedSymbolsCount > 0xFFFFF )
+			throwf("too many symbols (%lu) max %d", _importedSymbolsCount, 0xFFFFF);
 	 	return DYLD_CHAINED_PTR_32;
+	}
 	else
 		return DYLD_CHAINED_PTR_32_FIRMWARE;
 }
 
 void OutputFile::buildChainedFixupInfo(ld::Internal& state)
 {
-	if ( !_options.makeChainedFixups() )
+	if ( !_options.makeChainedFixups() && !state.cantUseChainedFixups )
 		return;
 
+	// count imported symbols
+	_importedSymbolsCount = 0;
+	for (ld::Internal::FinalSection* sect : state.sections) {
+		if ( sect->type() == ld::Section::typeImportProxies )
+			_importedSymbolsCount = sect->atoms.size();
+	}
+
 	// build table of segments, fixup locations, and symbol targets
-	const uint32_t						pageSize     = _options.segmentAlignment();
+	uint32_t							pageSize     = _options.segmentAlignment();
+	// The kernel and kexts need to support unaligned fixups, so just always force 4k alignment on them
+	if ( _options.isKernel() || (_options.outputKind() == Options::kKextBundle) )
+		pageSize = 0x1000;
 	const char* 						curSegName   = "";
 	const ld::Internal::FinalSection* 	firstSegSect = nullptr;
 	const ld::Internal::FinalSection* 	lastSect     = nullptr;
@@ -5022,12 +5374,14 @@ void OutputFile::buildChainedFixupInfo(ld::Internal& state)
 			bool hadSubtract;
 			uint64_t accumulator;
 			bool isBind = false;
+			bool isAuthPtr = false;
 			for (ld::Fixup::iterator fit = atom->fixupsBegin(), end=atom->fixupsEnd(); fit != end; ++fit) {
 				if ( fit->firstInCluster() ) {
 					accumulator = 0;
 					target = NULL;
 					hadSubtract = false;
 					isBind = false;
+					isAuthPtr = false;
 				}
 				if ( this->setsTarget(*fit) ) {
 					switch ( fit->binding ) {
@@ -5035,6 +5389,8 @@ void OutputFile::buildChainedFixupInfo(ld::Internal& state)
 						case ld::Fixup::bindingByNameUnbound:
 							break;
 						case ld::Fixup::bindingByContentBound:
+							target = fit->u.target;
+							break;
 						case ld::Fixup::bindingDirectlyBound:
 							target = fit->u.target;
 							break;
@@ -5089,21 +5445,16 @@ void OutputFile::buildChainedFixupInfo(ld::Internal& state)
 							// ld -r mode.  We want to write out the original relocation again
 							break;
 						}
-						if (_options.outputKind() == Options::kKextBundle ) {
-							// kexts dont' handle auth pointers, write unauth pointer
-							break;
-						}
 						isBind = true;
 						break;
 					case ld::Fixup::kindStoreTargetAddressLittleEndianAuth64:
-						if (_options.outputKind() == Options::kKextBundle ) {
-							// kexts dont' handle auth pointers, write unauth pointer
-							break;
-						}
 						accumulator = addressOf(state, fit, &target);
 						if ( fit->contentAddendOnly )
 							accumulator = 0;
 						isBind = true;
+						break;
+					case ld::Fixup::kindSetAuthData:
+						isAuthPtr = true;
 						break;
 #endif
 					default:
@@ -5114,6 +5465,34 @@ void OutputFile::buildChainedFixupInfo(ld::Internal& state)
 					if ( (target != NULL) && !hadSubtract ) {
 						uint64_t fixUpAddr = atom->finalAddress() + fit->offsetInAtom;
 						//fprintf(stderr, "fixUpAddr=0x%0llX\n",fixUpAddr);
+
+						// Diagnose unaligned pointers
+						switch (_chainedFixupSegments.back().pointerFormat) {
+							case DYLD_CHAINED_PTR_ARM64E:
+							case DYLD_CHAINED_PTR_ARM64E_USERLAND:
+							case DYLD_CHAINED_PTR_ARM64E_USERLAND24:
+								if ( fixUpAddr % 8 ) {
+									warning("pointer not aligned at address 0x%llX (%s + %u from %s)",
+											fixUpAddr, atom->name(), fit->offsetInAtom, atom->safeFilePath());
+									_hasUnalignedFixup = true;
+								}
+								break;
+							case DYLD_CHAINED_PTR_ARM64E_KERNEL:
+							case DYLD_CHAINED_PTR_64:
+							case DYLD_CHAINED_PTR_64_OFFSET:
+							case DYLD_CHAINED_PTR_ARM64E_FIRMWARE:
+							case DYLD_CHAINED_PTR_32:
+							case DYLD_CHAINED_PTR_32_FIRMWARE:
+								if ( fixUpAddr % 4 ) {
+									warning("pointer not aligned at address 0x%llX (%s + %u from %s)",
+										   fixUpAddr, atom->name(), fit->offsetInAtom, atom->safeFilePath());
+									_hasUnalignedFixup = true;
+								}
+								break;
+							default:
+								assert(0 && "unknown pointer format");
+						}
+
 						unsigned pageIndex = (fixUpAddr - _chainedFixupSegments.back().startAddr)/pageSize;
 						while ( pageIndex >= _chainedFixupSegments.back().pages.size() ) {
 							ChainedFixupPageInfo emptyPage;
@@ -5122,14 +5501,17 @@ void OutputFile::buildChainedFixupInfo(ld::Internal& state)
 						uint16_t pageOffset = fixUpAddr - (_chainedFixupSegments.back().startAddr + pageIndex*pageSize);
 						_chainedFixupSegments.back().pages[pageIndex].fixupOffsets.push_back(pageOffset);
 						// build map for binds
-						if ( needsBind(target, &accumulator) )
-							_chainedFixupBinds.ensureTarget(target, accumulator);
+						if ( needsBind(target, isAuthPtr, &accumulator) )
+							_chainedFixupBinds.ensureTarget(target, isAuthPtr, accumulator);
 					}
 				}
 			}
 		}
 		lastSect = sect;
 	}
+	if ( _hasUnalignedFixup )
+		throw "unaligned pointer(s)";
+
 	// sort all fixups on each page, so chain can be built
 	for (ChainedFixupSegInfo& segInfo : _chainedFixupSegments) {
 		for (ChainedFixupPageInfo& pageInfo : segInfo.pages) {
@@ -5140,8 +5522,11 @@ void OutputFile::buildChainedFixupInfo(ld::Internal& state)
 	uint64_t baseAddress = 0;
 	uint64_t maxRebaseAddress = 0;
 	for (OutputFile::ChainedFixupSegInfo& segInfo : _chainedFixupSegments) {
-		if ( strcmp(segInfo.name, "__TEXT") == 0 )
+		if ( strcmp(segInfo.name, "__TEXT") == 0 ) {
 			baseAddress = segInfo.startAddr;
+			if ( baseAddress == 0x4000 )
+				baseAddress = 0; // 32-bit main executables have rebase targets that are zero based
+		}
 		else if ( strcmp(segInfo.name, "__LINKEDIT") == 0 )
 			maxRebaseAddress = (segInfo.startAddr - baseAddress + 0x00100000-1) & -0x00100000; // align to 1MB
 	}
@@ -5163,6 +5548,9 @@ void OutputFile::noteTextReloc(const ld::Atom* atom, const ld::Atom* target)
 			switch ( _options.architecture()) {
 #if SUPPORT_ARCH_arm64
             case CPU_TYPE_ARM64:
+#endif
+#if SUPPORT_ARCH_arm64_32
+            case CPU_TYPE_ARM64_32:
 #endif
 #if SUPPORT_ARCH_arm64
 			{
@@ -5313,8 +5701,6 @@ void OutputFile::addDyldInfo(ld::Internal& state,  ld::Internal::FinalSection* s
 		// everything except lazy pointers
 		switch ( target->definition() ) {
 			case ld::Atom::definitionProxy:
-				if ( (dylib != NULL) && dylib->willBeLazyLoadedDylib() )
-					throwf("illegal data reference to %s in lazy loaded dylib %s", target->name(), dylib->path());
 				if ( target->contentType() == ld::Atom::typeTLV ) {
 					if ( sect->type() != ld::Section::typeTLVPointers )
 						throwf("illegal data reference in %s to thread local variable %s in dylib %s", 
@@ -5404,9 +5790,11 @@ void OutputFile::addDyldInfo(ld::Internal& state,  ld::Internal::FinalSection* s
 		if ( _options.sharedRegionEligible() ) {
 			// <rdar://problem/13287063> when range checking, ignore high byte of arm64 addends
 			uint64_t checkAddend = addend;
-			if ( (_options.architecture() == CPU_TYPE_ARM64)
-			   )
-				checkAddend &= 0x0FFFFFFFFFFFFFFFULL;
+			// don't warn about swift String optimization where high bit is set and pointer is to c-string - 0x20
+			if ( (checkAddend & 0xFFFFFFFF) == 0xFFFFFFE0 )
+				checkAddend += 32;
+			// top-byte-ignore
+			checkAddend &= 0x0FFFFFFFFFFFFFFFULL;
 			if ( checkAddend != 0 ) {
 				// make sure the addend does not cause the pointer to point outside the target's segment
 				// if it does, update_dyld_shared_cache will not be able to put this dylib into the shared cache
@@ -5415,7 +5803,7 @@ void OutputFile::addDyldInfo(ld::Internal& state,  ld::Internal::FinalSection* s
 					ld::Internal::FinalSection* sct = *sit;
 					uint64_t sctEnd = (sct->address+sct->size);
 					if ( (sct->address <= targetAddress) && (targetAddress < sctEnd) ) {
-						if ( (targetAddress+checkAddend) > sctEnd ) {
+						if ( (targetAddress+addend) > sctEnd ) {
 							warning("data symbol %s from %s has pointer to %s + 0x%08llX. "  
 									"That large of an addend may disable %s from being put in the dyld shared cache.", 
 									atom->name(), atom->safeFilePath(), target->name(), addend, _options.installPath() );
@@ -5425,23 +5813,17 @@ void OutputFile::addDyldInfo(ld::Internal& state,  ld::Internal::FinalSection* s
 			}
 		}
 		if ( ((address & (pointerSize-1)) != 0) && (rebaseType == REBASE_TYPE_POINTER) ) {
-			switch ( _options.unalignedPointerTreatment() ) {
-				case Options::kUnalignedPointerError:
-					throwf("pointer not aligned at address 0x%llX (%s + %lld from %s)",
-							address, atom->name(), (address - atom->finalAddress()), atom->safeFilePath());
-					break;
-				case Options::kUnalignedPointerWarning:
-					warning("pointer not aligned at address 0x%llX (%s + %lld from %s)",
-							address, atom->name(), (address - atom->finalAddress()), atom->safeFilePath());
-					break;
-				case Options::kUnalignedPointerIgnore:
-					// do nothing
-					break;
+			if ( _options.unalignedPointerTreatment() != Options::kUnalignedPointerIgnore ) {
+				warning("pointer not aligned at address 0x%llX (%s + %lld from %s)",
+						address, atom->name(), (address - atom->finalAddress()), atom->safeFilePath());
 			}
 			_hasUnalignedFixup = true;
 		}
 		_rebaseInfo.push_back(RebaseInfo(rebaseType, address));
 	}
+
+	if ( (needsBinding || needsWeakBinding) && _options.sharedRegionEligible() && (addend > 31) )
+		warning("addend too large. '%s' contains a pointer to %s+%llu. Dylibs in dyld shared cache can have max addend of 31", atom->name(), target->name(), addend);
 
 	if ( needsBinding ) {
 		if ( inReadOnlySeg ) {
@@ -5449,18 +5831,9 @@ void OutputFile::addDyldInfo(ld::Internal& state,  ld::Internal::FinalSection* s
 			sect->hasExternalRelocs = true; // so dyld knows to change permissions on __TEXT segment
 		}
 		if ( ((address & (pointerSize-1)) != 0) && (type == BIND_TYPE_POINTER) ) {
-			switch ( _options.unalignedPointerTreatment() ) {
-				case Options::kUnalignedPointerError:
-					throwf("pointer not aligned at address 0x%llX (%s + %lld from %s)",
-							address, atom->name(), (address - atom->finalAddress()), atom->safeFilePath());
-					break;
-				case Options::kUnalignedPointerWarning:
-					warning("pointer not aligned at address 0x%llX (%s + %lld from %s)",
-							address, atom->name(), (address - atom->finalAddress()), atom->safeFilePath());
-					break;
-				case Options::kUnalignedPointerIgnore:
-					// do nothing
-					break;
+			if ( _options.unalignedPointerTreatment() != Options::kUnalignedPointerIgnore ) {
+				warning("pointer not aligned at address 0x%llX (%s + %lld from %s)",
+						address, atom->name(), (address - atom->finalAddress()), atom->safeFilePath());
 			}
 			_hasUnalignedFixup = true;
 		}
@@ -5503,6 +5876,9 @@ void OutputFile::addChainedFixupLocation(ld::Internal& state, ld::Internal::Fina
 					// ok to ignore pc-rel references within a weak function to itself
 					return;
 				}
+				// <rdar://problem/57627678> static executables should not get warning about direct access to weak defs
+				if ( !_options.dyldOrKernelLoadsOutput() )
+					return;
 				// Have direct reference to weak-global.  This should be an indrect reference
 				const char* demangledName = strdup(_options.demangleSymbol(atom->name()));
 				warning("direct access in function '%s' from file '%s' to global weak symbol '%s' from file '%s' means the weak symbol cannot be overridden at runtime. "
@@ -5532,6 +5908,9 @@ void OutputFile::addChainedFixupLocation(ld::Internal& state, ld::Internal::Fina
 				// ok for __eh_frame and __uwind_info to use pointer diffs to global weak symbols
 				return;
 			}
+			// <rdar://problem/57627678> static executables should not get warning about direct access to weak defs
+			if ( !_options.dyldOrKernelLoadsOutput() )
+				return;
 			// Have direct reference to weak-global.  This should be an indrect reference
 			const char* demangledName = strdup(_options.demangleSymbol(atom->name()));
 			warning("direct access in function '%s' from file '%s' to global weak symbol '%s' from file '%s' means the weak symbol cannot be overridden at runtime. "
@@ -5570,6 +5949,9 @@ void OutputFile::addThreadedRebaseInfo(ld::Internal& state,  ld::Internal::Final
 					// ok to ignore pc-rel references within a weak function to itself
 					return;
 				}
+				// <rdar://problem/57627678> static executables should not get warning about direct access to weak defs
+				if ( !_options.dyldOrKernelLoadsOutput() )
+					return;
 				// Have direct reference to weak-global.  This should be an indrect reference
 				const char* demangledName = strdup(_options.demangleSymbol(atom->name()));
 				warning("direct access in function '%s' from file '%s' to global weak symbol '%s' from file '%s' means the weak symbol cannot be overridden at runtime. "
@@ -5599,6 +5981,9 @@ void OutputFile::addThreadedRebaseInfo(ld::Internal& state,  ld::Internal::Final
 				// ok for __eh_frame and __uwind_info to use pointer diffs to global weak symbols
 				return;
 			}
+			// <rdar://problem/57627678> static executables should not get warning about direct access to weak defs
+			if ( !_options.dyldOrKernelLoadsOutput() )
+				return;
 			// Have direct reference to weak-global.  This should be an indrect reference
 			const char* demangledName = strdup(_options.demangleSymbol(atom->name()));
 			warning("direct access in function '%s' from file '%s' to global weak symbol '%s' from file '%s' means the weak symbol cannot be overridden at runtime. "
@@ -5777,9 +6162,6 @@ void OutputFile::addClassicRelocs(ld::Internal& state, ld::Internal::FinalSectio
 			if ( needsExternReloc ) {
 				if ( inReadOnlySeg )
 					noteTextReloc(atom, target);
-				const ld::dylib::File* dylib = dynamic_cast<const ld::dylib::File*>(target->file());
-				if ( (dylib != NULL) && dylib->willBeLazyLoadedDylib() )
-					throwf("illegal data reference to %s in lazy loaded dylib %s", target->name(), dylib->path());
 				_externalRelocsAtom->addExternalPointerReloc(relocAddress, target);
 				sect->hasExternalRelocs = true;
 				fixupWithTarget->contentAddendOnly = true;
@@ -5788,7 +6170,39 @@ void OutputFile::addClassicRelocs(ld::Internal& state, ld::Internal::FinalSectio
 				assert(target != NULL);
 				if ( inReadOnlySeg )
 					noteTextReloc(atom, target);
-				_localRelocsAtom->addPointerReloc(relocAddress, target->machoSection());
+				// The x86_64 kernel will continue to use classic relocs in the kernel linker, not chained fixups
+				// so we don't need to diagnose unaligned fixups there
+				if ( _options.isKernel() && (relocAddress % 4) && (_options.architecture() != CPU_TYPE_X86_64) ) {
+					throwf("pointer not aligned at address 0x%llX (%s -> %s)",
+							relocAddress, atom->name(), target ? target->name() : "");
+				}
+				uint32_t relocLength = 0;
+				switch ( fixupWithStore->kind ) {
+					case ld::Fixup::kindStoreLittleEndian32:
+					case ld::Fixup::kindStoreBigEndian32:
+					case ld::Fixup::kindStoreTargetAddressLittleEndian32:
+					case ld::Fixup::kindStoreTargetAddressBigEndian32:
+						relocLength = 4;
+						break;
+					case ld::Fixup::kindStoreLittleEndian64:
+					case ld::Fixup::kindStoreBigEndian64:
+					case ld::Fixup::kindStoreTargetAddressLittleEndian64:
+			#if SUPPORT_ARCH_arm64e
+					case ld::Fixup::kindStoreTargetAddressLittleEndianAuth64:
+			#endif
+					case ld::Fixup::kindStoreTargetAddressBigEndian64:
+						relocLength = 8;
+						break;
+
+					default:
+						throwf("Unhandled kind");
+				}
+				// If we are the kernel, the emit the correct length of relocation
+				// but for everyone else just emit the pointer size for bincomat.
+				// The kernel is special as it has i386 code in an x86_64 binary
+				if ( !_options.isKernel() )
+					relocLength = _localRelocsAtom->pointerSize();
+				_localRelocsAtom->addPointerReloc(relocAddress, target->machoSection(), relocLength);
 				sect->hasLocalRelocs = true;
 			}
 			break;
@@ -5828,7 +6242,7 @@ void OutputFile::addClassicRelocs(ld::Internal& state, ld::Internal::FinalSectio
 					fixupWithTarget->contentAddendOnly = true;
 				}
 				else {
-					_localRelocsAtom->addPointerReloc(relocAddress, target->machoSection());
+					_localRelocsAtom->addPointerReloc(relocAddress, target->machoSection(), _localRelocsAtom->pointerSize());
 					sect->hasLocalRelocs = true;
 				}
 			}
@@ -5847,6 +6261,9 @@ bool OutputFile::useExternalSectionReloc(const ld::Atom* atom, const ld::Atom* t
 {
 	if ( (_options.architecture() == CPU_TYPE_X86_64)
 	  || (_options.architecture() == CPU_TYPE_ARM64)
+#if SUPPORT_ARCH_arm64_32
+	  || (_options.architecture() == CPU_TYPE_ARM64_32)
+#endif
        ) {
 		// x86_64 and ARM64 use external relocations for everthing that has a symbol
 		return ( target->symbolTableInclusion() != ld::Atom::symbolTableNotIn );
@@ -5900,6 +6317,18 @@ bool OutputFile::useSectionRelocAddend(ld::Fixup* fixupWithTarget)
 		}
 	}
 #endif
+#if SUPPORT_ARCH_arm64_32
+	if ( _options.architecture() == CPU_TYPE_ARM64_32 ) {
+		switch ( fixupWithTarget->kind ) {
+			case ld::Fixup::kindStoreARM64Branch26:
+			case ld::Fixup::kindStoreARM64Page21:
+			case ld::Fixup::kindStoreARM64PageOff12:
+				return true;
+			default:
+				return false;
+		}
+	}
+#endif
 	return false;
 }
 
@@ -5938,6 +6367,9 @@ void OutputFile::addSectionRelocs(ld::Internal& state, ld::Internal::FinalSectio
 	// in x86_64 and arm64 .o files an external reloc means the content contains just the addend
 	if ( (_options.architecture() == CPU_TYPE_X86_64)
 	  || (_options.architecture() == CPU_TYPE_ARM64)
+#if SUPPORT_ARCH_arm64_32
+	  || (_options.architecture() == CPU_TYPE_ARM64_32)
+#endif
 	   ) {
 		if ( targetUsesExternalReloc ) {
 			fixupWithTarget->contentAddendOnly = true;
@@ -5992,7 +6424,7 @@ void OutputFile::makeSplitSegInfo(ld::Internal& state)
 		ld::Internal::FinalSection* sect = *sit;
 		if ( sect->isSectionHidden() )
 			continue;
-		if ( (_options.outputKind() == Options::kDynamicLibrary) && (strcmp(sect->sectionName(), "__interpose") == 0) && (strncmp(sect->segmentName(),"__DATA",6) == 0) )
+		if ( (_options.outputKind() == Options::kDynamicLibrary) && (sect->type() == ld::Section::typeInterposing) )
 			warning("__interpose sections cannot be used in dylibs put in the dyld cache");
 		if ( strcmp(sect->segmentName(), "__TEXT") != 0 )
 			continue;
@@ -6043,6 +6475,7 @@ void OutputFile::makeSplitSegInfo(ld::Internal& state)
 					case ld::Fixup::kindStoreX86PCRel32TLVLoad:
 					case ld::Fixup::kindStoreX86PCRel32TLVLoadNowLEA:
 					case ld::Fixup::kindStoreTargetAddressX86PCRel32:
+					case ld::Fixup::kindStoreTargetAddressX86BranchPCRel32:
 					case ld::Fixup::kindStoreTargetAddressX86PCRel32GOTLoad:
 					case ld::Fixup::kindStoreTargetAddressX86PCRel32GOTLoadNowLEA:
 					case ld::Fixup::kindStoreTargetAddressX86PCRel32TLVLoad:
@@ -6106,7 +6539,7 @@ void OutputFile::makeSplitSegInfoV2(ld::Internal& state)
 		ld::Internal::FinalSection* sect = *sit;
 		if ( sect->isSectionHidden() )
 			continue;
-		if ( (_options.outputKind() == Options::kDynamicLibrary) && (strcmp(sect->sectionName(), "__interpose") == 0) && (strncmp(sect->segmentName(),"__DATA",6) == 0) )
+		if ( (_options.outputKind() == Options::kDynamicLibrary) && (sect->type() == ld::Section::typeInterposing) )
 			warning("__interpose sections cannot be used in dylibs put in the dyld cache");
 		bool codeSection = (sect->type() == ld::Section::typeCode);
 		if (log) fprintf(stderr, "sect: %s, address=0x%llX\n", sect->sectionName(), sect->address);
@@ -6139,12 +6572,31 @@ void OutputFile::makeSplitSegInfoV2(ld::Internal& state)
 					thumbTarget = targetIsThumb(state, fit);
 					if ( thumbTarget ) 
 						accumulator |= 1;
-					toOffset = accumulator - state.atomToSection[target]->address;
+					ld::Internal::FinalSection* targetFinalSection = state.atomToSection[target];
+					toOffset = accumulator - targetFinalSection->address;
 					if ( target->definition() != ld::Atom::definitionProxy ) {
-						if ( target->section().type() == ld::Section::typeMachHeader )
+						if ( target->section().type() == ld::Section::typeMachHeader ) {
 							toSectionIndex = 0;
-						else
+						} else if ( target->section().type() == ld::Section::typeLastSection ) {
+							// use section index of previous section
+							ld::Internal::FinalSection* lastEmittedSectionSeen = nullptr;
+							for (std::vector<ld::Internal::FinalSection*>::iterator sit2 = state.sections.begin(); sit2 != state.sections.end(); ++sit2) {
+								if ( *sit2 == targetFinalSection )
+									break;
+								if ( shouldSetMachoSectionIndex(*sit2) ) {
+									lastEmittedSectionSeen = *sit2;
+								}
+							}
+							toOffset += (targetFinalSection->address - lastEmittedSectionSeen->address);
 							toSectionIndex = target->machoSection();
+						} else if ( target->section().type() == ld::Section::typeFirstSection ) {
+							// use section index of next section
+							// Unlike typeLastSection, we don't need to adjust anything here as there won't be padding between the start atom and the first
+							// real section
+							toSectionIndex = target->machoSection();
+						} else {
+							toSectionIndex = target->machoSection();
+						}
 					}
 				}
 				switch ( fit->kind ) {
@@ -6199,6 +6651,7 @@ void OutputFile::makeSplitSegInfoV2(ld::Internal& state)
 					case ld::Fixup::kindStoreX86PCRel32TLVLoad:
 					case ld::Fixup::kindStoreX86PCRel32TLVLoadNowLEA:
 					case ld::Fixup::kindStoreTargetAddressX86PCRel32:
+					case ld::Fixup::kindStoreTargetAddressX86BranchPCRel32:
 					case ld::Fixup::kindStoreTargetAddressX86PCRel32GOTLoad:
 					case ld::Fixup::kindStoreTargetAddressX86PCRel32GOTLoadNowLEA:
 					case ld::Fixup::kindStoreTargetAddressX86PCRel32TLVLoad:
@@ -6220,18 +6673,19 @@ void OutputFile::makeSplitSegInfoV2(ld::Internal& state)
 					case ld::Fixup::kindStoreTargetAddressARM64GOTLeaPage21:
 					case ld::Fixup::kindStoreTargetAddressARM64TLVPLoadPage21:
 					case ld::Fixup::kindStoreTargetAddressARM64TLVPLoadNowLeaPage21:
-						if ( fromSectionIndex != toSectionIndex )
+						if ( (fromSectionIndex != toSectionIndex) || _options.supportPackingText() )
 							kind = DYLD_CACHE_ADJ_V2_ARM64_ADRP;
 						break;
 					case ld::Fixup::kindStoreARM64PageOff12:
 					case ld::Fixup::kindStoreARM64GOTLeaPageOff12:
 					case ld::Fixup::kindStoreARM64TLVPLoadNowLeaPageOff12:
 					case ld::Fixup::kindStoreTargetAddressARM64PageOff12:
+					case ld::Fixup::kindStoreTargetAddressARM64PageOff12ConvertAddToLoad:
 					case ld::Fixup::kindStoreTargetAddressARM64GOTLeaPageOff12:
 					case ld::Fixup::kindStoreTargetAddressARM64GOTLoadPageOff12:
 					case ld::Fixup::kindStoreTargetAddressARM64TLVPLoadPageOff12:
 					case ld::Fixup::kindStoreTargetAddressARM64TLVPLoadNowLeaPageOff12:
-						if ( fromSectionIndex != toSectionIndex )
+						if ( (fromSectionIndex != toSectionIndex) || _options.supportPackingText() )
 							kind = DYLD_CACHE_ADJ_V2_ARM64_OFF12;
 						break;
 					case ld::Fixup::kindStoreARM64Branch26:
@@ -6293,7 +6747,7 @@ void OutputFile::makeSplitSegInfoV2(ld::Internal& state)
 void OutputFile::writeMapFile(ld::Internal& state)
 {
 	if ( _options.generatedMapPath() != NULL ) {
-		FILE* mapFile = fopen(_options.generatedMapPath(), "w"); 
+		FILE* mapFile = fopen(_options.generatedMapPath(), "w");
 		if ( mapFile != NULL ) {
 			// write output path
 			fprintf(mapFile, "# Path: %s\n", _options.outputFilePath());
@@ -6327,6 +6781,27 @@ void OutputFile::writeMapFile(ld::Internal& state)
 					}
 				}
 			}
+			// for LTO build map of symbols back to original .o file
+			__block std::map<std::string, const ld::File*> ltoSymbolsMap;
+			for (const ld::relocatable::File* ltoFile : state.filesForLTO) {
+				ltoFile->forEachLtoSymbol(^(const char* symName) {
+					auto pos = ltoSymbolsMap.find(symName);
+					if ( pos == ltoSymbolsMap.end() ) {
+						ltoSymbolsMap[symName] = ltoFile;
+					}
+					else {
+						// same symbol in multiple files, map will show lto.o
+						pos->second = nullptr;
+					}
+				});
+				// add to object file table even if nothing used from it
+				if ( readerToOrdinal.count(ltoFile) == 0 ) {
+					ld::File::Ordinal readerOrdinal = ltoFile->ordinal();
+					readerToOrdinal[ltoFile] = readerOrdinal;
+					ordinalToReader[readerOrdinal] = ltoFile;
+				}
+			}
+
 			for (const ld::Atom* atom : state.deadAtoms) {
 				const ld::File* reader = atom->originalFile();
 				if ( reader == NULL )
@@ -6417,8 +6892,21 @@ void OutputFile::writeMapFile(ld::Internal& state)
 						}
 						name = buffer;
 					}
-					fprintf(mapFile, "0x%08llX\t0x%08llX\t[%3u] %s\n", atom->finalAddress(), atom->size(), 
-							readerToFileOrdinal[atom->originalFile()], name);
+					// <rdar://problem/50031245> LTO: preserve the original file reference for symbols in link map
+					unsigned fromFileOrdinal = readerToFileOrdinal[atom->originalFile()];
+					const ld::relocatable::File* objFile = dynamic_cast<const ld::relocatable::File*>(atom->originalFile());
+					if ( (objFile != nullptr) && (objFile->sourceKind() == ld::relocatable::File::kSourceLTO) ) {
+						const auto& pos = ltoSymbolsMap.find(atom->name());
+						if ( pos != ltoSymbolsMap.end() ) {
+							const ld::File* betterFile = pos->second;
+							if ( betterFile != nullptr ) {
+								const auto& pos2 = readerToFileOrdinal.find(betterFile);
+								if ( pos2 != readerToFileOrdinal.end() )
+									fromFileOrdinal = pos2->second;
+							}
+						}
+					}
+					fprintf(mapFile, "0x%08llX\t0x%08llX\t[%3u] %s\n", atom->finalAddress(), atom->size(), fromFileOrdinal, name);
 				}
 			}
 			// preload check is hack until 26613948 is fixed
@@ -6900,7 +7388,8 @@ void OutputFile::synthesizeDebugNotes(ld::Internal& state)
 			}
 			else {
 				ld::relocatable::File::Stab globalsStab;
-				const char* name = atom->name();
+				std::string namestr = std::string(atom->getUserVisibleName());
+				const char* name = strdup(namestr.c_str());
 				if ( atom->scope() == ld::Atom::scopeTranslationUnit ) {
 					// Synthesize STSYM stab for statics
 					globalsStab.atom		= atom;
@@ -6937,9 +7426,17 @@ void OutputFile::synthesizeDebugNotes(ld::Internal& state)
 		state.stabs.push_back(endFileStab);
 	}
 
+	// <rdar://66170674> sort .o files into canonical order
+	std::vector<const ld::relocatable::File*> orderedFilesSeen;
+	for (const ld::relocatable::File* obj : filesSeenWithStabs)
+		orderedFilesSeen.push_back(obj);
+	std::sort(orderedFilesSeen.begin(), orderedFilesSeen.end(), [](const ld::relocatable::File* lhs, const ld::relocatable::File* rhs) {
+		return (lhs->ordinal() < rhs->ordinal());
+	});
+
 	// copy any stabs from .o files
 	bool deadStripping = _options.deadCodeStrip();
-	for (const ld::relocatable::File* obj : filesSeenWithStabs) {
+	for (const ld::relocatable::File* obj : orderedFilesSeen) {
 		const std::vector<ld::relocatable::File::Stab>* filesStabs = obj->stabs();
 		if ( filesStabs != NULL ) {
 			for (const ld::relocatable::File::Stab& stab : *filesStabs ) {
@@ -6977,7 +7474,7 @@ void OutputFile::synthesizeDebugNotes(ld::Internal& state)
 
 }
 
-void OutputFile::ChainedFixupBinds::ensureTarget(const ld::Atom* atom, uint64_t addend)
+void OutputFile::ChainedFixupBinds::ensureTarget(const ld::Atom* atom, bool authPtr, uint64_t addend)
 {
 	if ( addend == 0 ) {
 		// special case normal case of addend==0 to use map to be fast
@@ -6994,10 +7491,19 @@ void OutputFile::ChainedFixupBinds::ensureTarget(const ld::Atom* atom, uint64_t 
 		++index;
 	}
 	_bindsTargets.push_back({atom, addend});
-	if ( addend > 0xFFFFFFFF )
-		_hasHugeAddends = true;
-	else if ( addend > 255 )
-		_hasLargeAddends = true;
+	if ( authPtr )  {
+		// arm64e auth-pointer binds have no bit for addend, so any addend means wide import table
+		if ( addend > 0xFFFFFFFF )
+			_hasHugeAddends = true;
+		else if ( addend != 0 )
+			_hasLargeAddends = true;
+	}
+	else {
+		if ( addend > 0xFFFFFFFF )
+			_hasHugeAddends = true;
+		else if ( addend > 255 )
+			_hasLargeAddends = true;
+	}
 }
 
 uint32_t OutputFile::ChainedFixupBinds::count() const
@@ -7013,6 +7519,19 @@ bool OutputFile::ChainedFixupBinds::hasLargeAddends() const
 bool OutputFile::ChainedFixupBinds::hasHugeAddends() const
 {
 	return _hasHugeAddends;
+}
+
+bool OutputFile::ChainedFixupBinds::hasHugeSymbolStrings() const
+{
+	// we need to see if total size of all imported symbols will be >= 8MB
+	// 99.9% of binaries have less than 10,000 imports and easily fit in 8MB of strings
+	if ( _bindsTargets.size() < 10000 )
+		return false;
+	uint32_t totalStringSize = 0;
+	for (const AtomAndAddend& entry : _bindsTargets) {
+		totalStringSize += (strlen(entry.atom->name())+1);
+	}
+	return ( totalStringSize >= 0x00800000);
 }
 
 void OutputFile::ChainedFixupBinds::forEachBind(void (^callback)(unsigned bindOrdinal, const ld::Atom* importAtom, uint64_t addend))
