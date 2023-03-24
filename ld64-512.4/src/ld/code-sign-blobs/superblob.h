@@ -36,7 +36,7 @@ public:
 	
 	void setup(size_t size, unsigned cnt)
 	{ this->initialize(size); this->mCount = cnt; }
-
+	
 	struct Index {
 		Endian<Type> type;			// type of sub-Blob
 		Endian<Offset> offset;		// starting offset
@@ -45,14 +45,14 @@ public:
 	bool validateBlob(size_t maxSize = 0) const;
 	
 	unsigned count() const { return mCount; }
-
+	
 	// access by index number
 	Type type(unsigned n) const { assert(n < mCount); return mIndex[n].type; }
 	const BlobCore *blob(unsigned n) const { assert(n < mCount); Offset off=mIndex[n].offset; return off ? at<const BlobCore>(off) : NULL; }
-
+	
 	template <class BlobType>
 	const BlobType *blob(unsigned n) const { return BlobType::specific(blob(n)); }
-
+	
 	// access by index type (assumes unique types)
 	const BlobCore *find(Type type) const;
 	template <class BlobType>
@@ -72,7 +72,7 @@ inline bool SuperBlobCore<_BlobType, _magic, _Type>::validateBlob(size_t maxSize
 	size_t ixLimit = sizeof(SuperBlobCore) + cnt * sizeof(Index);	// end of index vector
 	if (!BlobCore::validateBlob(_magic, ixLimit, maxSize))
 		return false;
-
+	
 	for (const Index *ix = mIndex + cnt - 1; ix >= mIndex; ix--) {
 		Offset offset = ix->offset;
 		if ( offset == 0 )
@@ -100,7 +100,7 @@ const BlobCore *SuperBlobCore<_BlobType, _magic, _Type>::find(Type t) const
 	for (unsigned slot = 0; slot < mCount; slot++) {
 		if (mIndex[slot].type == t) {
 			uint32_t off = mIndex[slot].offset;
-			if ( off == 0 ) 
+			if ( off == 0 )
 				return NULL;
 			else
 				return at<const BlobCore>(off);
@@ -128,7 +128,7 @@ public:
 		for (typename BlobMap::iterator it = mPieces.begin(); it != mPieces.end(); ++it)
 			mPieces.insert(make_pair(it->first, it->second->clone()));
 	}
-
+	
 	~Maker()
 	{
 		for (typename BlobMap::iterator it = mPieces.begin(); it != mPieces.end(); ++it)
@@ -142,7 +142,7 @@ public:
 	size_t size(size_t size1 = 0, ...) const;	// size with optional additional blob sizes
 	_BlobType *make() const;					// create (malloc) and return SuperBlob
 	_BlobType *operator () () const { return make(); }
-
+	
 private:
 	typedef std::map<Type, BlobCore *> BlobMap;
 	BlobMap mPieces;
@@ -194,7 +194,7 @@ size_t SuperBlobCore<_BlobType, _magic, _Type>::Maker::size(size_t size1, ...) c
 		if ( it->second != NULL )
 			total += (it->second->length() + 3) & (-4); // 4-byte align each element
 	}
-
+	
 	// add preview blob sizes to calculation (if any)
 	if (size1) {
 		va_list args;
@@ -206,7 +206,7 @@ size_t SuperBlobCore<_BlobType, _magic, _Type>::Maker::size(size_t size1, ...) c
 		} while (size1);
 		va_end(args);
 	}
-
+	
 	return sizeof(SuperBlobCore) + count * sizeof(Index) + total;
 }
 
@@ -231,7 +231,7 @@ _BlobType *SuperBlobCore<_BlobType, _magic, _Type>::Maker::make() const
 		if ( b != NULL ) {
 			result->mIndex[n].offset = pc;
 			memcpy(result->template at<unsigned char>(pc), b, b->length());
-			pc += ((b->length() + 3) & (-4)); // 4-byte align each element 
+			pc += ((b->length() + 3) & (-4)); // 4-byte align each element
 		}
 		else {
 			result->mIndex[n].offset = 0;

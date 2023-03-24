@@ -1,16 +1,16 @@
-/* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
+/* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
  * Copyright (c) 2008-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
+ *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
  * compliance with the License. Please obtain a copy of the License at
  * http://www.opensource.apple.com/apsl/ and read it before using this
  * file.
- * 
+ *
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -18,9 +18,9 @@
  * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
  * Please see the License for the specific language governing rights and
  * limitations under the License.
- * 
+ *
  * @APPLE_LICENSE_HEADER_END@
-*/
+ */
 #ifndef __MACH_O_TRIE__
 #define __MACH_O_TRIE__
 
@@ -35,8 +35,8 @@ namespace trie {
 
 struct Edge
 {
-					Edge(const char* s, struct Node* n) : fSubString(s), fChild(n) { }
-					~Edge() {  }
+	Edge(const char* s, struct Node* n) : fSubString(s), fChild(n) { }
+	~Edge() {  }
 	const char*		fSubString;
 	struct Node*	fChild;
 	
@@ -44,10 +44,10 @@ struct Edge
 
 struct Node
 {
-						Node(const char* s) : fCummulativeString(s), fAddress(0), fFlags(0), 
-											fOther(0), fImportedName(NULL), fOrdered(false), 
-											fHaveExportInfo(false), fTrieOffset(0) {}
-						~Node() { }
+	Node(const char* s) : fCummulativeString(s), fAddress(0), fFlags(0),
+	fOther(0), fImportedName(NULL), fOrdered(false),
+	fHaveExportInfo(false), fTrieOffset(0) {}
+	~Node() { }
 	const char*			fCummulativeString;
 	std::vector<Edge>	fChildren;
 	uint64_t			fAddress;
@@ -130,7 +130,7 @@ struct Node
 			}
 		}
 	}
-
+	
 	// byte for terminal node size in bytes, or 0x00 if not terminal node
 	// teminal node (uleb128 flags, uleb128 addr [uleb128 other])
 	// byte for child node count
@@ -150,7 +150,7 @@ struct Node
 					nodeSize += uleb128_size(fOther);
 			}
 			// do have export info, overall node size so far is uleb128 of export info + export info
-			nodeSize += uleb128_size(nodeSize); 
+			nodeSize += uleb128_size(nodeSize);
 		}
 		// add children
 		++nodeSize; // byte for count of chidren
@@ -165,7 +165,7 @@ struct Node
 		// return true if fTrieOffset was changed
 		return result;
 	}
-
+	
 	void appendToStream(std::vector<uint8_t>& out) {
 		if ( fHaveExportInfo ) {
 			if ( fFlags & EXPORT_SYMBOL_FLAGS_REEXPORT ) {
@@ -244,7 +244,7 @@ private:
 		return result;
 	}
 	
-
+	
 };
 
 inline uint64_t read_uleb128(const uint8_t*& p, const uint8_t* end) {
@@ -253,20 +253,20 @@ inline uint64_t read_uleb128(const uint8_t*& p, const uint8_t* end) {
 	do {
 		if (p == end)
 			throw "malformed uleb128 extends beyond trie";
-
+		
 		uint64_t slice = *p & 0x7f;
-
+		
 		if (bit >= 64 || slice << bit >> bit != slice)
 			throw "uleb128 too big for 64-bits";
 		else {
 			result |= (slice << bit);
 			bit += 7;
 		}
-	} 
+	}
 	while (*p++ & 0x80);
 	return result;
 }
-	
+
 
 
 struct Entry
@@ -288,7 +288,7 @@ inline void makeTrie(const std::vector<Entry>& entries, std::vector<uint8_t>& ou
 	for (std::vector<Entry>::const_iterator it = entries.begin(); it != entries.end(); ++it) {
 		start.addSymbol(it->name, it->address, it->flags, it->other, it->importName);
 	}
-
+	
 	// create vector of nodes
 	std::vector<Node*> orderedNodes;
 	orderedNodes.reserve(entries.size()*2);
@@ -323,9 +323,9 @@ struct EntryWithOffset
 
 
 
-static inline void processExportNode(const uint8_t* const start, const uint8_t* p, const uint8_t* const end, 
-									char* cummulativeString, int curStrOffset, 
-									std::vector<EntryWithOffset>& output) 
+static inline void processExportNode(const uint8_t* const start, const uint8_t* p, const uint8_t* const end,
+									 char* cummulativeString, int curStrOffset,
+									 std::vector<EntryWithOffset>& output)
 {
 	if ( p >= end )
 		throw "malformed trie, node past end";
@@ -342,9 +342,9 @@ static inline void processExportNode(const uint8_t* const start, const uint8_t* 
 			e.entry.importName = (char*)p;
 		}
 		else {
-			e.entry.address = read_uleb128(p, end); 
+			e.entry.address = read_uleb128(p, end);
 			if ( e.entry.flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER )
-				e.entry.other = read_uleb128(p, end); 
+				e.entry.other = read_uleb128(p, end);
 			else
 				e.entry.other = 0;
 			e.entry.importName = NULL;
@@ -376,7 +376,7 @@ inline void parseTrie(const uint8_t* start, const uint8_t* end, std::vector<Entr
 	if ( start == end )
 		return;
 	// worst case largest exported symbol names is length of whole trie
-	char* cummulativeString = new char[end-start]; 
+	char* cummulativeString = new char[end-start];
 	std::vector<EntryWithOffset> entries;
 	processExportNode(start, start, end, cummulativeString, 0, entries);
 	// to preserve tie layout order, sort by node offset

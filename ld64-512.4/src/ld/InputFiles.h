@@ -57,26 +57,26 @@ namespace tool {
 class InputFiles : public ld::dylib::File::DylibHandler
 {
 public:
-								InputFiles(Options& opts);
-
+	InputFiles(Options& opts);
+	
 	// implementation from ld::dylib::File::DylibHandler
 	virtual ld::dylib::File*	findDylib(const char* installPath, const ld::dylib::File* fromDylib, bool speculative);
 	
 	// iterates all atoms in initial files
 	void						forEachInitialAtom(ld::File::AtomHandler&, ld::Internal& state);
 	// searches libraries for name
-	bool						searchLibraries(const char* name, bool searchDylibs, bool searchArchives,  
-																  bool dataSymbolOnly, ld::File::AtomHandler&) const;
+	bool						searchLibraries(const char* name, bool searchDylibs, bool searchArchives,
+												bool dataSymbolOnly, ld::File::AtomHandler&) const;
 	// see if any linked dylibs export a weak def of symbol
 	bool						searchWeakDefInDylib(const char* name) const;
 	// copy dylibs to link with in command line order
 	void						dylibs(ld::Internal& state);
 	
 	void						archives(ld::Internal& state);
-
+	
 	void						addLinkerOptionLibraries(ld::Internal& state, ld::File::AtomHandler& handler);
 	void						createIndirectDylibs();
-
+	
 	// for -print_statistics
 	volatile int64_t			_totalObjectSize;
 	volatile int64_t			_totalArchiveSize;
@@ -98,18 +98,18 @@ private:
 	void						createOpaqueFileSections();
 	bool						libraryAlreadyLoaded(const char* path);
 	bool						frameworkAlreadyLoaded(const char* path, const char* frameworkName);
-
+	
 	// for pipelined linking
-    void						waitForInputFiles();
+	void						waitForInputFiles();
 	static void					waitForInputFiles(InputFiles *inputFiles);
-
+	
 	// for threaded input file processing
 	void						parseWorkerThread();
 	static void					parseWorkerThread(InputFiles *inputFiles);
 	void						startThread(void (*threadFunc)(InputFiles *)) const;
-
+	
 	typedef std::map<std::string, ld::dylib::File*>	InstallNameToDylib;
-
+	
 	const Options&				_options;
 	std::vector<ld::File*>		_inputFiles;
 	mutable std::set<class ld::File*>	_archiveFilesLogged;
@@ -117,10 +117,10 @@ private:
 	InstallNameToDylib			_installPathToDylibs;
 	std::set<ld::dylib::File*>	_allDylibs;
 	ld::dylib::File*			_bundleLoader;
-    struct strcompclass {
-        bool operator() (const char *a, const char *b) const { return ::strcmp(a, b) < 0; }
-    };
-
+	struct strcompclass {
+		bool operator() (const char *a, const char *b) const { return ::strcmp(a, b) < 0; }
+	};
+	
 	// for threaded input file processing
 #if HAVE_PTHREADS
 	pthread_mutex_t				_parseLock;
@@ -137,22 +137,22 @@ private:
 	
 	ld::File::Ordinal			_indirectDylibOrdinal;
 	ld::File::Ordinal			_linkerOptionOrdinal;
-    
-    class LibraryInfo {
-        ld::File* _lib;
-        bool      _isDylib;
-    public:
-        LibraryInfo(ld::dylib::File* dylib) : _lib(dylib), _isDylib(true) {};
-        LibraryInfo(ld::archive::File* dylib) : _lib(dylib), _isDylib(false) {};
-
-        bool isDylib() const { return _isDylib; }
-        ld::dylib::File *dylib() const { return (ld::dylib::File*)_lib; }
-        ld::archive::File *archive() const { return (ld::archive::File*)_lib; }
-    };
-    std::vector<LibraryInfo>  _searchLibraries;
+	
+	class LibraryInfo {
+		ld::File* _lib;
+		bool      _isDylib;
+	public:
+		LibraryInfo(ld::dylib::File* dylib) : _lib(dylib), _isDylib(true) {};
+		LibraryInfo(ld::archive::File* dylib) : _lib(dylib), _isDylib(false) {};
+		
+		bool isDylib() const { return _isDylib; }
+		ld::dylib::File *dylib() const { return (ld::dylib::File*)_lib; }
+		ld::archive::File *archive() const { return (ld::archive::File*)_lib; }
+	};
+	std::vector<LibraryInfo>  _searchLibraries;
 };
 
-} // namespace tool 
-} // namespace ld 
+} // namespace tool
+} // namespace ld
 
 #endif // __INPUT_FILES_H__

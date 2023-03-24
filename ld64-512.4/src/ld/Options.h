@@ -47,21 +47,32 @@ class Snapshot;
 class LibraryOptions
 {
 public:
-	LibraryOptions() : fWeakImport(false), fReExport(false), fBundleLoader(false), 
-						fLazyLoad(false), fUpward(false), fIndirectDylib(false), 
-						fForceLoad(false) {}
+	LibraryOptions() : fWeakImport(false), fReExport(false), fBundleLoader(false),
+	fUpward(false), fIndirectDylib(false), fNeeded(false),
+	fForceLoad(false), fLoadHidden(false) {}
 	// for dynamic libraries
 	bool		fWeakImport;
 	bool		fReExport;
 	bool		fBundleLoader;
-	bool		fLazyLoad;
 	bool		fUpward;
 	bool		fIndirectDylib;
+	bool		fNeeded;
 	// for static libraries
 	bool		fForceLoad;
+	bool		fLoadHidden;
 };
 
 
+inline bool isCompilerSupportLib(const char* path) {
+	const char* libName = strrchr(path, '/');
+	if ( libName == nullptr )
+		return false;
+	if ( strncmp(libName, "/libclang_rt", 12) == 0 )
+		return true;
+	if ( strncmp(libName, "/libcompiler-rt", 15) == 0 )
+		return true;
+	return false;
+}
 
 //
 // The public interface to the Options class is the abstract representation of what work the linker
@@ -85,14 +96,14 @@ public:
 	enum Treatment { kError, kWarning, kSuppress, kNULL, kInvalid };
 	enum UndefinedTreatment { kUndefinedError, kUndefinedWarning, kUndefinedSuppress, kUndefinedDynamicLookup };
 	enum WeakReferenceMismatchTreatment { kWeakReferenceMismatchError, kWeakReferenceMismatchWeak,
-										  kWeakReferenceMismatchNonWeak };
+		kWeakReferenceMismatchNonWeak };
 	enum CommonsMode { kCommonsIgnoreDylibs, kCommonsOverriddenByDylibs, kCommonsConflictsDylibsError };
 	enum UUIDMode { kUUIDNone, kUUIDRandom, kUUIDContent };
 	enum LocalSymbolHandling { kLocalSymbolsAll, kLocalSymbolsNone, kLocalSymbolsSelectiveInclude, kLocalSymbolsSelectiveExclude };
 	enum BitcodeMode { kBitcodeProcess, kBitcodeAsData, kBitcodeMarker, kBitcodeStrip };
 	enum DebugInfoStripping { kDebugInfoNone, kDebugInfoMinimal, kDebugInfoFull };
 	enum UnalignedPointerTreatment { kUnalignedPointerError, kUnalignedPointerWarning, kUnalignedPointerIgnore };
-
+	
 	static void userReadableSwiftVersion(uint8_t value, char versionString[64])
 	{
 		switch (value) {
@@ -121,26 +132,26 @@ public:
 				sprintf(versionString, "unknown ABI version 0x%02X", value);
 		}
 	}
-
-
+	
+	
 	class FileInfo {
-    public:
+	public:
 		const char*				path;
 		time_t					modTime;
 		LibraryOptions			options;
 		ld::File::Ordinal		ordinal;
 		bool					fromFileList;
 		bool					isInlined;
-
+		
 		// These are used by the threaded input file parsing engine.
 		mutable int				inputFileSlot;	// The input file "slot" assigned to this particular file
 		bool					readyToParse;
-
-        // The use pattern for FileInfo is to create one on the stack in a leaf function and return
-        // it to the calling frame by copy. Therefore the copy constructor steals the path string from
-        // the source, which dies with the stack frame.
-        FileInfo(FileInfo const &other) : path(other.path), modTime(other.modTime), options(other.options), ordinal(other.ordinal), fromFileList(other.fromFileList), isInlined(other.isInlined), inputFileSlot(-1) { ((FileInfo&)other).path = NULL; };
-
+		
+		// The use pattern for FileInfo is to create one on the stack in a leaf function and return
+		// it to the calling frame by copy. Therefore the copy constructor steals the path string from
+		// the source, which dies with the stack frame.
+		FileInfo(FileInfo const &other) : path(other.path), modTime(other.modTime), options(other.options), ordinal(other.ordinal), fromFileList(other.fromFileList), isInlined(other.isInlined), inputFileSlot(-1) { ((FileInfo&)other).path = NULL; };
+		
 		FileInfo &operator=(FileInfo other) {
 			std::swap(path, other.path);
 			std::swap(modTime, other.modTime);
@@ -152,30 +163,30 @@ public:
 			std::swap(readyToParse, other.readyToParse);
 			return *this;
 		}
-
-        // Create an empty FileInfo. The path can be set implicitly by checkFileExists().
-        FileInfo() : path(NULL), modTime(-1), options(), fromFileList(false), isInlined(false) {};
-        
-        // Create a FileInfo for a specific path, but does not stat the file.
-        FileInfo(const char *_path) : path(strdup(_path)), modTime(-1), options(), fromFileList(false), isInlined(false) {};
-
-        ~FileInfo() { if (path) ::free((void*)path); }
-        
-        // Stat the file and update fileLen and modTime.
-        // If the object already has a path the p must be NULL.
-        // If the object does not have a path then p can be any candidate path, and if the file exists the object permanently remembers the path.
-        // Returns true if the file exists, false if not.
-        bool checkFileExists(const Options& options, const char *p=NULL);
-        
-        // Returns true if a previous call to checkFileExists() succeeded.
-        // Returns false if the file does not exist of checkFileExists() has never been called.
-        bool missing() const { return modTime == -1; }
+		
+		// Create an empty FileInfo. The path can be set implicitly by checkFileExists().
+		FileInfo() : path(NULL), modTime(-1), options(), fromFileList(false), isInlined(false) {};
+		
+		// Create a FileInfo for a specific path, but does not stat the file.
+		FileInfo(const char *_path) : path(strdup(_path)), modTime(-1), options(), fromFileList(false), isInlined(false) {};
+		
+		~FileInfo() { if (path) ::free((void*)path); }
+		
+		// Stat the file and update fileLen and modTime.
+		// If the object already has a path the p must be NULL.
+		// If the object does not have a path then p can be any candidate path, and if the file exists the object permanently remembers the path.
+		// Returns true if the file exists, false if not.
+		bool checkFileExists(const Options& options, const char *p=NULL);
+		
+		// Returns true if a previous call to checkFileExists() succeeded.
+		// Returns false if the file does not exist of checkFileExists() has never been called.
+		bool missing() const { return modTime == -1; }
 	};
-
+	
 	class TAPIInterface {
 	public:
 		TAPIInterface(tapi::LinkerInterfaceFile* file, const char* path, const char *installName) :
-			_file(file), _tbdPath(path), _installName(installName) {}
+		_file(file), _tbdPath(path), _installName(installName) {}
 		tapi::LinkerInterfaceFile* getInterfaceFile() const { return _file; }
 		std::string getTAPIFilePath() const { return _tbdPath; }
 		const std::string &getInstallName() const { return _installName; }
@@ -194,24 +205,25 @@ public:
 		typedef ExtraSection* iterator;
 		typedef const ExtraSection* const_iterator;
 	};
-
+	
 	struct SectionAlignment {
 		const char*				segmentName;
 		const char*				sectionName;
+		const char*				alignmentStr;
 		uint8_t					alignment;
 	};
-
+	
 	struct SectionOrderList {
 		const char*					segmentName;
 		std::vector<const char*>	sectionOrder;
 	};
-
+	
 	struct OrderedSymbol {
 		const char*				symbolName;
 		const char*				objectFileName;
 	};
 	typedef const OrderedSymbol*	OrderedSymbolsIterator;
-
+	
 	struct SegmentStart {
 		const char*				name;
 		uint64_t				address;
@@ -232,41 +244,44 @@ public:
 		const char*				installName;
 		const char*				useInstead;
 	};
-
+	
 	struct AliasPair {
 		const char*			realName;
 		const char*			alias;
 	};
-
+	
 	struct SectionRename {
 		const char*			fromSegment;
 		const char*			fromSection;
 		const char*			toSegment;
 		const char*			toSection;
 	};
-
+	
 	struct SegmentRename {
 		const char*			fromSegment;
 		const char*			toSegment;
 	};
-
-	enum { depLinkerVersion=0x00, depObjectFile=0x10, depDirectDylib=0x10, depIndirectDylib=0x10, 
-		  depUpwardDirectDylib=0x10, depUpwardIndirectDylib=0x10, depArchive=0x10,
-		  depFileList=0x10, depSection=0x10, depBundleLoader=0x10, depMisc=0x10, depNotFound=0x11,
-		  depOutputFile = 0x40 };
+	
+	enum { depLinkerVersion=0x00, depObjectFile=0x10, depDirectDylib=0x10, depIndirectDylib=0x10,
+		depUpwardDirectDylib=0x10, depUpwardIndirectDylib=0x10, depArchive=0x10,
+		depFileList=0x10, depSection=0x10, depBundleLoader=0x10, depMisc=0x10, depNotFound=0x11,
+		depOutputFile = 0x40 };
 	
 	void						addDependency(uint8_t, const char* path) const;
 	
 	typedef const char* const*	UndefinesIterator;
-
+	
 	const char*                 modInitCheckFilePath() const { return fmodInitCheckFilePath; }
-//	const ObjectFile::ReaderOptions&	readerOptions();
+
+	
+	//	const ObjectFile::ReaderOptions&	readerOptions();
 	const char*							outputFilePath() const { return fOutputFile; }
 	const std::vector<FileInfo>&		getInputFiles() const { return fInputFiles; }
-
+	
 	cpu_type_t					architecture() const { return fArchitecture; }
 	bool						preferSubArchitecture() const { return fHasPreferredSubType; }
-	cpu_subtype_t				subArchitecture() const { return fSubArchitecture; }
+	cpu_subtype_t				subArchitecture() const { return fSubArchitecture & ~CPU_SUBTYPE_MASK; }
+	uint8_t						subArchitectureFlags() const { return (fSubArchitecture & CPU_SUBTYPE_MASK) >> 24; }
 	cpu_type_t                  fallbackArchitecture() const { return fFallbackArchitecture; }
 	cpu_subtype_t				fallbackSubArchitecture() const { return fFallbackSubArchitecture; }
 	bool						allowSubArchitectureMismatches() const { return fAllowCpuSubtypeMismatches; }
@@ -276,9 +291,11 @@ public:
 	const char*					architectureName() const { return fArchitectureName; }
 	void						setInferredArch(cpu_type_t, cpu_subtype_t subtype);
 	void						setInferredPlatform(ld::Platform platform, uint32_t minOsVers);
-	bool						archSupportsThumb2() const { return fArchSupportsThumb2; }
+	Thumb2Support				archThumb2Support() const { return fArchThumb2Support; }
+	bool						archSupportsThumb2() const { return archThumb2Support() == Thumb2Support::all; }
 	OutputKind					outputKind() const { return fOutputKind; }
 	bool						dyldLoadsOutput() const;
+	bool						dyldOrKernelLoadsOutput() const;
 	bool						bindAtLoad() const { return fBindAtLoad; }
 	NameSpace					nameSpace() const { return fNameSpace; }
 	const char*					installPath() const;			// only for kDynamicLibrary
@@ -360,7 +377,7 @@ public:
 	uint8_t						customSectionAlignment(const char* segName, const char* sectName) const;
 	uint32_t					initialSegProtection(const char*) const;
 	bool						readOnlyDataSegment(const char*) const;
-	uint32_t					maxSegProtection(const char*) const; 
+	uint32_t					maxSegProtection(const char*) const;
 	bool						saveTempFiles() const { return fSaveTempFiles; }
 	const std::vector<const char*>&   rpaths() const { return fRPaths; }
 	bool						readOnlyx86Stubs() { return fReadOnlyx86Stubs; }
@@ -376,7 +393,6 @@ public:
 	bool						allowTextRelocs() const { return fAllowTextRelocs; }
 	bool						warnAboutTextRelocs() const { return fWarnTextRelocs; }
 	bool						kextsUseStubs() const { return fKextsUseStubs; }
-	bool						usingLazyDylibLinking() const { return fUsingLazyDylibLinking; }
 	bool						verbose() const { return fVerbose; }
 	bool						makeEncryptable() const { return fEncryptable; }
 	bool						needsUnwindInfoSection() const { return fAddCompactUnwindEncoding; }
@@ -390,7 +406,6 @@ public:
 	bool						makeThreadedStartsSection() const { return fMakeThreadedStartsSection; }
 	bool						hasExportedSymbolOrder();
 	bool						exportedSymbolOrder(const char* sym, unsigned int* order) const;
-	bool						orderData() { return fOrderData; }
 	bool						errorOnOtherArchFiles() const { return fErrorOnOtherArchFiles; }
 	bool						markAutoDeadStripDylib() const { return fMarkDeadStrippableDylib; }
 	bool						removeEHLabels() const { return fNoEHLabels; }
@@ -457,12 +472,17 @@ public:
 	bool						makeInitializersIntoOffsets() const { return fMakeInitializersIntoOffsets; }
 	bool						useLinkedListBinding() const { return fUseLinkedListBinding; }
 	bool						makeChainedFixups() const { return fMakeChainedFixups; }
+	bool					    chainedFixupsSectionUseVMOffsets() const { return fChainedFixupsSectionUseVMOffsets; }
+	bool						stealPointersFixupChains() const { return fFixupChainsStealPointers; }
 #if SUPPORT_ARCH_arm64e
 	bool						useAuthenticatedStubs() const { return fUseAuthenticatedStubs; }
 	bool						supportsAuthenticatedPointers() const { return fSupportsAuthenticatedPointers; }
+	bool						useAuthDataSegment() const { return fUseAuthDataSegment; }
 #endif
+	bool						supportPackingText() const { return fSupportPackingText; }
 	bool						noLazyBinding() const { return fNoLazyBinding; }
 	bool						debugVariant() const { return fDebugVariant; }
+	bool						isKernel() const { return fKernel; }
 	const char*					reverseSymbolMapPath() const { return fReverseMapPath; }
 	std::string					reverseMapTempPath() const { return fReverseMapTempPath; }
 	bool						ltoCodegenOnly() const { return fLTOCodegenOnly; }
@@ -480,7 +500,7 @@ public:
 	bool						forceWeakNonWildCard(const char* symbolName) const;
 	bool						forceNotWeakNonWildcard(const char* symbolName) const;
 	bool						forceCoalesce(const char* symbolName) const;
-    Snapshot&                   snapshot() const { return fLinkSnapshot; }
+	Snapshot&                   snapshot() const { return fLinkSnapshot; }
 	bool						errorBecauseOfWarnings() const;
 	bool						needsThreadLoadCommand() const { return fNeedsThreadLoadCommand; }
 	bool						needsEntryPointLoadCommand() const { return fEntryPointLoadCommand; }
@@ -490,24 +510,29 @@ public:
 	bool						isSimulatorSupportDylib() const { return fSimulatorSupportDylib; }
 	uint64_t					sourceVersion() const { return fSourceVersion; }
 	const char*					demangleSymbol(const char* sym) const;
-    bool						pipelineEnabled() const { return fPipelineFifo != NULL; }
-    const char*					pipelineFifo() const { return fPipelineFifo; }
+	bool						pipelineEnabled() const { return fPipelineFifo != NULL; }
+	const char*					pipelineFifo() const { return fPipelineFifo; }
 	bool						dumpDependencyInfo() const { return (fDependencyInfoPath != NULL); }
 	const char*					dependencyInfoPath() const { return fDependencyInfoPath; }
 	bool						targetIOSSimulator() const { return platforms().contains(ld::simulatorPlatforms); }
 	ld::relocatable::File::LinkerOptionsList&
-								linkerOptions() const { return fLinkerOptions; }
+	linkerOptions() const { return fLinkerOptions; }
 	FileInfo					findFramework(const char* frameworkName) const;
 	FileInfo					findLibrary(const char* rootName, bool dylibsOnly=false) const;
+	bool						armFirmwareVariant() const;
 	bool						armUsesZeroCostExceptions() const;
 	const std::vector<SectionRename>& sectionRenames() const { return fSectionRenames; }
 	const std::vector<SegmentRename>& segmentRenames() const { return fSegmentRenames; }
-	bool						moveRoSymbol(const char* symName, const char* filePath, const char*& seg, bool& wildCardMatch) const;
-	bool						moveRwSymbol(const char* symName, const char* filePath, const char*& seg, bool& wildCardMatch) const;
+	bool						moveRoSymbol(std::string_view symName, const char* filePath, const char*& seg, bool& wildCardMatch) const;
+	bool						moveRwSymbol(std::string_view symName, const char* filePath, const char*& seg, bool& wildCardMatch) const;
 	bool						moveAXMethodList(const char* className) const;
 	const ld::VersionSet& 		platforms() const { return fPlatforms; }
 	const std::vector<const char*>&	sdkPaths() const { return fSDKPaths; }
 	bool						internalSDK() const { return fInternalSDK; }
+	bool						adHocSign() const { return fAdHocSign; }
+	bool						platformMismatchesAreWarning() const { return fPlatformMismatchesAreWarning; }
+	bool						warnUnusedDylibs() const { return fWarnUnusedDylibs; }
+	bool						useObjCRelativeMethodLists() const { return fUseObjCRelativeMethodLists; }
 	std::vector<std::string>	writeBitcodeLinkOptions() const;
 	std::string					getSDKVersionStr() const;
 	uint8_t						maxDefaultCommonAlign() const { return fMaxDefaultCommonAlign; }
@@ -522,19 +547,21 @@ public:
 	const char*					buildContextName() const { return fBuildContextName; }
 	bool 						sharedCacheEligiblePath(const char* path) const;
 	const char* 				debugMapObjectPrefixPath() const { return fOSOPrefixPath; }
-
+	bool						fromSDK(const char* path) const;
+	
 	static uint32_t				parseVersionNumber32(const char*);
-
+	
 private:
 	typedef std::unordered_map<const char*, unsigned int, ld::CStringHash, ld::CStringEquals> NameToOrder;
 	typedef std::unordered_set<const char*, ld::CStringHash, ld::CStringEquals>  NameSet;
 	enum ExportMode { kExportDefault, kExportSome, kDontExportSome };
 	enum LibrarySearchMode { kSearchDylibAndArchiveInEachDir, kSearchAllDirsForDylibsThenAllDirsForArchives };
 	enum InterposeMode { kInterposeNone, kInterposeAllExternal, kInterposeSome };
-
+	enum SymbolMatchingMode { kAllowWildcards, kDisallowWildcards };
+	
 	class SetWithWildcards {
 	public:
-		void					insert(const char*);
+		void					insert(const char*, SymbolMatchingMode);
 		bool					contains(const char*, bool* wildCardMatch=NULL) const;
 		bool					containsWithPrefix(const char* symbol, const char* file, bool& wildCardMatch) const;
 		bool					containsNonWildcard(const char*) const;
@@ -542,37 +569,39 @@ private:
 		bool					hasWildCards() const	{ return !fWildCard.empty(); }
 		NameSet::iterator		regularBegin() const	{ return fRegular.begin(); }
 		NameSet::iterator		regularEnd() const		{ return fRegular.end(); }
-		void					remove(const NameSet&); 
+		void					remove(const NameSet&);
 		std::vector<const char*>		data() const;
 	private:
 		static bool				hasWildCards(const char*);
 		bool					wildCardMatch(const char* pattern, const char* candidate) const;
 		bool					inCharRange(const char*& range, unsigned char c) const;
-
+		
 		NameSet							fRegular;
 		std::vector<const char*>		fWildCard;
 	};
-
+	
 	struct SymbolsMove {
 		const char*			toSegment;
 		SetWithWildcards	symbols;
 	};
-
+	
 	struct DependencyEntry {
 		uint8_t				opcode;
 		std::string			path;
 	};
-
-	const char*					checkForNullArgument(const char* argument_name, const char* arg) const;
+	
+	const char*					checkForNullArgument(const char* argument_name, const char* arg, bool allowDashArg=false) const;
 	const char*					checkForNullVersionArgument(const char* argument_name, const char* arg) const;
 	void						parse(int argc, const char* argv[]);
 	void						checkIllegalOptionCombinations();
 	void						buildSearchPaths(int argc, const char* argv[]);
 	void						parseArch(const char* architecture);
 	void						selectFallbackArch(const char *architecture);
-	FileInfo					findFramework(const char* rootName, const char* suffix) const;
+	FileInfo					findFramework(const char* rootName, const char* suffix, bool useCurrentVersion=false) const;
 	bool						checkForFile(const char* format, const char* dir, const char* rootName,
 											 FileInfo& result) const;
+	bool						checkForFileWithSuffix(const char* possiblePath, FileInfo& result) const;
+	bool						findFileWithSuffix(const std::string &path, const std::vector<std::string> &tbdExtensions, FileInfo& result) const;
 	uint64_t					parseVersionNumber64(const char*);
 	std::string					getVersionString32(uint32_t ver) const;
 	std::string					getVersionString64(uint64_t ver) const;
@@ -583,7 +612,7 @@ private:
 	void						addSubLibrary(const char* name);
 	void						loadFileList(const char* fileOfPaths, ld::File::Ordinal baseOrdinal);
 	uint64_t					parseAddress(const char* addr);
-	void						loadExportFile(const char* fileOfExports, const char* option, SetWithWildcards& set);
+	void						loadExportFile(const char* fileOfExports, const char* option, SetWithWildcards& set, SymbolMatchingMode match_mode);
 	void						parseAliasFile(const char* fileOfAliases);
 	void						parsePreCommandLineEnvironmentSettings();
 	void						parsePostCommandLineEnvironmentSettings();
@@ -594,6 +623,7 @@ private:
 	CommonsMode					parseCommonsTreatment(const char* mode);
 	Treatment					parseTreatment(const char* treatment);
 	void						reconfigureDefaults();
+	void						expandResponseFiles(int& argc, const char**& argv);
 	void						checkForClassic(int argc, const char* argv[]);
 	void						parseSegAddrTable(const char* segAddrPath, const char* installPath);
 	void						addLibrary(const FileInfo& info);
@@ -602,13 +632,14 @@ private:
 	void						loadSymbolOrderFile(const char* fileOfExports, NameToOrder& orderMapping);
 	void						addSectionRename(const char* srcSegment, const char* srcSection, const char* dstSegment, const char* dstSection);
 	void						addSegmentRename(const char* srcSegment, const char* dstSegment);
-	void						addSymbolMove(const char* dstSegment, const char* symbolList, std::vector<SymbolsMove>& list, const char* optionName);
+	void						addSymbolMove(const char* dstSegment, const char* symbolList, std::vector<SymbolsMove>& list, const char* optionName, SymbolMatchingMode);
 	void						cannotBeUsedWithBitcode(const char* arg);
 	void						loadImplictZipperFile(const char *path,std::vector<const char*>& paths);
 	void 						inferArchAndPlatform();
-
 	const char*                         fmodInitCheckFilePath;
-//	ObjectFile::ReaderOptions			fReaderOptions;
+	
+	
+	//	ObjectFile::ReaderOptions			fReaderOptions;
 	const char*							fOutputFile;
 	std::vector<Options::FileInfo>		fInputFiles;
 	cpu_type_t							fArchitecture;
@@ -618,7 +649,7 @@ private:
 	const char*							fArchitectureName;
 	OutputKind							fOutputKind;
 	bool								fHasPreferredSubType;
-	bool								fArchSupportsThumb2;
+	Thumb2Support						fArchThumb2Support;
 	bool								fBindAtLoad;
 	bool								fKeepPrivateExterns;
 	bool								fIgnoreOtherArchFiles;
@@ -684,6 +715,7 @@ private:
 	bool								fDisableNonExecutableHeap;
 	uint32_t							fMinimumHeaderPad;
 	uint64_t							fSegmentAlignment;
+	bool								fForceAlignment;
 	CommonsMode							fCommonsMode;
 	enum UUIDMode						fUUIDMode;
 	SetWithWildcards					fLocalSymbolsIncluded;
@@ -709,17 +741,16 @@ private:
 	bool								fAllowTextRelocs;
 	bool								fWarnTextRelocs;
 	bool								fKextsUseStubs;
-	bool								fUsingLazyDylibLinking;
 	bool								fEncryptable;
 	bool								fEncryptableForceOn;
 	bool								fEncryptableForceOff;
-	bool								fOrderData;
 	bool								fMarkDeadStrippableDylib;
 	bool								fMakeCompressedDyldInfo;
 	bool								fMakeCompressedDyldInfoForceOff;
 	bool								fMakeThreadedStartsSection;
 	bool								fNoEHLabels;
 	bool								fAllowCpuSubtypeMismatches;
+	bool								fAllowCpuSubtypeMismatchesForceOn;
 	bool								fEnforceDylibSubtypesMatch;
 	bool								fWarnOnSwiftABIVersionMismatches;
 	bool								fUseSimplifiedDylibReExports;
@@ -737,6 +768,7 @@ private:
 	bool								fWhyLoad;
 	bool								fRootSafe;
 	bool								fSetuidSafe;
+	bool								fSearchInSparseFrameworks;
 	bool								fImplicitlyLinkPublicDylibs;
 	bool								fAddCompactUnwindEncoding;
 	bool								fWarnCompactUnwind;
@@ -744,7 +776,6 @@ private:
 	bool								fAutoOrderInitializers;
 	bool								fOptimizeZeroFill;
 	bool								fMergeZeroFill;
-	bool								fLogObjectFiles;
 	bool								fLogAllFiles;
 	bool								fTraceDylibs;
 	bool								fTraceIndirectDylibs;
@@ -775,7 +806,7 @@ private:
 	bool								fEntryPointLoadCommand;
 	bool								fSourceVersionLoadCommand;
 	bool								fSourceVersionLoadCommandForceOn;
-	bool								fSourceVersionLoadCommandForceOff;	
+	bool								fSourceVersionLoadCommandForceOff;
 	bool								fExportDynamic;
 	bool								fAbsoluteSymbols;
 	bool								fAllowSimulatorToLinkWithMacOSX;
@@ -804,14 +835,22 @@ private:
 	bool								fVerboseDeDupe;
 	bool								fMakeInitializersIntoOffsets;
 	bool								fUseLinkedListBinding;
+	bool								fMakeChainedFixupsForceOn;
+	bool								fMakeChainedFixupsForceOff;
 	bool								fMakeChainedFixups;
 	bool								fMakeChainedFixupsSection;
+	bool								fChainedFixupsSectionUseVMOffsets = false;
+	bool								fFixupChainsStealPointers		= false;
 #if SUPPORT_ARCH_arm64e
-	bool								fUseAuthenticatedStubs = false;
-	bool								fSupportsAuthenticatedPointers = false;
+	bool								fUseAuthenticatedStubs 			= false;
+	bool								fSupportsAuthenticatedPointers 	= false;
+	bool								fUseAuthDataSegment				= false;
+	bool								fUseAuthDataSegmentForceOff		= false;
 #endif
+	bool								fSupportPackingText 			= false;
 	bool								fNoLazyBinding;
 	bool								fDebugVariant;
+	bool								fKernel							= false;
 	const char*							fReverseMapPath;
 	std::string							fReverseMapTempPath;
 	bool								fLTOCodegenOnly;
@@ -826,6 +865,16 @@ private:
 	ld::VersionSet						fPlatforms;
 	bool								fPlatfromVersionCmdFound;
 	bool								fInternalSDK;
+	bool								fWarnUnusedDylibs;
+	bool								fWarnUnusedDylibsForceOn;
+	bool								fWarnUnusedDylibsForceOff;
+	bool								fAdHocSign;
+	bool								fAdHocSignForceOn;
+	bool								fAdHocSignForceOff;
+	bool								fPlatformMismatchesAreWarning;
+	bool								fForceObjCRelativeMethodListsOn;
+	bool								fForceObjCRelativeMethodListsOff;
+	bool								fUseObjCRelativeMethodLists;
 	std::vector<AliasPair>				fAliases;
 	std::vector<const char*>			fInitialUndefines;
 	NameSet								fAllowedUndefined;
@@ -836,7 +885,7 @@ private:
 	std::vector<SegmentStart>			fCustomSegmentAddresses;
 	std::vector<SegmentSize>			fCustomSegmentSizes;
 	std::vector<SegmentProtect>			fCustomSegmentProtections;
-	std::vector<DylibOverride>			fDylibOverrides; 
+	std::vector<DylibOverride>			fDylibOverrides;
 	std::vector<const char*>			fLLVMOptions;
 	std::vector<const char*>			fLibrarySearchPaths;
 	std::vector<const char*>			fFrameworkSearchPaths;
@@ -852,9 +901,9 @@ private:
 	std::vector<SymbolsMove>			fSymbolsMovesCode;
 	std::vector<SymbolsMove>			fSymbolsMovesAXMethodLists;
 	bool								fSaveTempFiles;
-    mutable Snapshot					fLinkSnapshot;
-    bool								fSnapshotRequested;
-    const char*							fPipelineFifo;
+	mutable Snapshot					fLinkSnapshot;
+	bool								fSnapshotRequested;
+	const char*							fPipelineFifo;
 	const char*							fDependencyInfoPath;
 	const char*							fBuildContextName;
 	mutable int							fTraceFileDescriptor;
@@ -864,6 +913,7 @@ private:
 	mutable std::vector<Options::TAPIInterface> fTAPIFiles;
 	bool								fPreferTAPIFile;
 	const char*							fOSOPrefixPath;
+	const char*							fImageSuffix;
 };
 
 

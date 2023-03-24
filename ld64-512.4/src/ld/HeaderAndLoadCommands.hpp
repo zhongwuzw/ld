@@ -42,11 +42,11 @@ namespace tool {
 class HeaderAndLoadCommandsAbtract : public ld::Atom
 {
 public:
-							HeaderAndLoadCommandsAbtract(const ld::Section& sect, ld::Atom::Definition d, 
-												ld::Atom::Combine c, ld::Atom::Scope s, ld::Atom::ContentType ct, 
-												ld::Atom::SymbolTableInclusion i, bool dds, bool thumb, bool al, 
-												ld::Atom::Alignment a) : ld::Atom(sect, d, c, s, ct, i, dds, thumb, al, a) { }
-
+	HeaderAndLoadCommandsAbtract(const ld::Section& sect, ld::Atom::Definition d,
+								 ld::Atom::Combine c, ld::Atom::Scope s, ld::Atom::ContentType ct,
+								 ld::Atom::SymbolTableInclusion i, bool dds, bool thumb, bool al,
+								 ld::Atom::Alignment a) : ld::Atom(sect, d, c, s, ct, i, dds, thumb, al, a) { }
+	
 	virtual void setUUID(const uint8_t digest[16]) = 0;
 	virtual void recopyUUIDCommand() = 0;
 	virtual const uint8_t* getUUID() const = 0;
@@ -54,24 +54,24 @@ public:
 									  uint64_t& sectOffset, uint64_t& sectEnd) const = 0;
 	virtual void linkeditCmdInfo(uint64_t& offset, uint64_t& size) const = 0;
 	virtual void symbolTableCmdInfo(uint64_t& offset, uint64_t& size) const = 0;
-
+	
 };
 
 template <typename A>
 class HeaderAndLoadCommandsAtom : public HeaderAndLoadCommandsAbtract
 {
 public:
-												HeaderAndLoadCommandsAtom(const Options& opts, ld::Internal& state, 
-																			OutputFile& writer);
-
+	HeaderAndLoadCommandsAtom(const Options& opts, ld::Internal& state,
+							  OutputFile& writer);
+	
 	// overrides of ld::Atom
 	virtual ld::File*							file() const		{ return NULL; }
 	virtual const char*							name() const		{ return "mach-o header and load commands"; }
 	virtual uint64_t							size() const;
 	virtual uint64_t							objectAddress() const { return _address; }
-
+	
 	virtual void								copyRawContent(uint8_t buffer[]) const;
-
+	
 	// overrides of HeaderAndLoadCommandsAbtract
 	virtual void setUUID(const uint8_t digest[16])	{ memcpy(_uuid, digest, 16); }
 	virtual void recopyUUIDCommand();
@@ -80,8 +80,8 @@ public:
 									  uint64_t& sectOffset, uint64_t& sectEnd) const;
 	virtual void linkeditCmdInfo(uint64_t& offset, uint64_t& size) const;
 	virtual void symbolTableCmdInfo(uint64_t& offset, uint64_t& size) const;
-
-
+	
+	
 private:
 	typedef typename A::P						P;
 	typedef typename A::P::E					E;
@@ -126,11 +126,12 @@ private:
 	uint8_t*					copyDyldEnvLoadCommand(uint8_t* p, const char* env) const;
 	uint8_t*					copyLinkerOptionsLoadCommand(uint8_t* p, const std::vector<const char*>&) const;
 	uint8_t*					copyOptimizationHintsLoadCommand(uint8_t* p) const;
-
+	uint8_t*					copyCodeSignatureLoadCommand(uint8_t* p) const;
+	
 	uint32_t					sectionFlags(ld::Internal::FinalSection* sect) const;
 	bool						sectionTakesNoDiskSpace(ld::Internal::FinalSection* sect) const;
 	
-
+	
 	const Options&				_options;
 	ld::Internal&				_state;
 	OutputFile&					_writer;
@@ -155,6 +156,7 @@ private:
 	bool						_hasOptimizationHints;
 	bool						_hasExportsTrieLoadCommand;
 	bool						_hasChainedFixupsLoadCommand;
+	bool						_hasCodeSignature;
 	bool						_simulatorSupportDylib;
 	ld::VersionSet			 	_platforms;
 	uint32_t					_dylibLoadCommmandsCount;
@@ -181,16 +183,16 @@ ld::Section HeaderAndLoadCommandsAtom<A>::_s_preload_section("__HEADER", "__mach
 
 template <typename A>
 HeaderAndLoadCommandsAtom<A>::HeaderAndLoadCommandsAtom(const Options& opts, ld::Internal& state, OutputFile& writer)
-	: HeaderAndLoadCommandsAbtract((opts.outputKind() == Options::kPreload) ? _s_preload_section : _s_section, 
-				ld::Atom::definitionRegular, ld::Atom::combineNever, 
-				ld::Atom::scopeTranslationUnit, ld::Atom::typeUnclassified, 
-				ld::Atom::symbolTableNotIn, false, false, false, 
-				(opts.outputKind() == Options::kPreload) ? ld::Atom::Alignment(0) : ld::Atom::Alignment(log2(opts.segmentAlignment())) ),
-		_options(opts), _state(state), _writer(writer), _address(0), _uuidCmdInOutputBuffer(NULL), _linkeditCmdOffset(0), _symboltableCmdOffset(0),
-		_toolsVersions(state.toolsVersions)
+: HeaderAndLoadCommandsAbtract((opts.outputKind() == Options::kPreload) ? _s_preload_section : _s_section,
+							   ld::Atom::definitionRegular, ld::Atom::combineNever,
+							   ld::Atom::scopeTranslationUnit, ld::Atom::typeUnclassified,
+							   ld::Atom::symbolTableNotIn, false, false, false,
+							   (opts.outputKind() == Options::kPreload) ? ld::Atom::Alignment(0) : ld::Atom::Alignment(log2(opts.segmentAlignment())) ),
+_options(opts), _state(state), _writer(writer), _address(0), _uuidCmdInOutputBuffer(NULL), _linkeditCmdOffset(0), _symboltableCmdOffset(0),
+_toolsVersions(state.toolsVersions)
 {
 	bzero(_uuid, 16);
-	_hasDyldInfoLoadCommand = opts.makeCompressedDyldInfo();
+	_hasDyldInfoLoadCommand = opts.makeCompressedDyldInfo() || state.cantUseChainedFixups;
 	_hasDyldLoadCommand = ((opts.outputKind() == Options::kDynamicExecutable) || (_options.outputKind() == Options::kDyld));
 	_hasDylibIDLoadCommand = (opts.outputKind() == Options::kDynamicLibrary);
 	_hasThreadLoadCommand = _options.needsThreadLoadCommand();
@@ -201,9 +203,10 @@ HeaderAndLoadCommandsAtom<A>::HeaderAndLoadCommandsAtom(const Options& opts, ld:
 	_hasSymbolTableLoadCommand = true;
 	_hasUUIDLoadCommand = (opts.UUIDMode() != Options::kUUIDNone);
 	_hasOptimizationHints = (_state.someObjectHasOptimizationHints && (opts.outputKind() == Options::kObjectFile));
-	_hasExportsTrieLoadCommand = opts.makeChainedFixups() && opts.dyldLoadsOutput();
-	_hasChainedFixupsLoadCommand = opts.makeChainedFixups() && opts.dyldLoadsOutput();
-
+	_hasExportsTrieLoadCommand = opts.makeChainedFixups() && !state.cantUseChainedFixups && opts.dyldLoadsOutput();
+	_hasCodeSignature = opts.adHocSign();
+	_hasChainedFixupsLoadCommand = opts.makeChainedFixups() && !state.cantUseChainedFixups && opts.dyldOrKernelLoadsOutput();
+	
 	switch ( opts.outputKind() ) {
 		case Options::kDynamicExecutable:
 		case Options::kDynamicLibrary:
@@ -217,21 +220,27 @@ HeaderAndLoadCommandsAtom<A>::HeaderAndLoadCommandsAtom(const Options& opts, ld:
 				_hasUUIDLoadCommand = false;
 			_hasDynamicSymbolTableLoadCommand = false;
 			for (std::vector<ld::Internal::FinalSection*>::iterator it = _state.sections.begin(); it != _state.sections.end(); ++it) {
-				if ( (*it)->type() == ld::Section::typeNonLazyPointer ) {
+				if ( ((*it)->type() == ld::Section::typeNonLazyPointer) || ((*it)->type() == ld::Section::typeTLVPointers) ) {
 					_hasDynamicSymbolTableLoadCommand = true;
 					break;
 				}
 			}
 			for (const char* frameworkName : _state.unprocessedLinkerOptionFrameworks) {
 				std::vector<const char*>* lo = new std::vector<const char*>();
-				lo->push_back("-framework");
+				if ( _state.linkerOptionNeededFrameworks.count(frameworkName) )
+					lo->push_back("-needed_framework");
+				else
+					lo->push_back("-framework");
 				lo->push_back(frameworkName);
 				_linkerOptions.push_back(*lo);
 			};
 			for (const char* libName : _state.unprocessedLinkerOptionLibraries) {
 				std::vector<const char*>* lo = new std::vector<const char*>();
 				char * s = new char[strlen(libName)+3];
-				strcpy(s, "-l");
+				if ( _state.linkerOptionNeededLibraries.count(libName) )
+					strcpy(s, "-needed-l");
+				else
+					strcpy(s, "-l");
 				strcat(s, libName);
 				lo->push_back(s);
 				_linkerOptions.push_back(*lo);
@@ -273,7 +282,7 @@ HeaderAndLoadCommandsAtom<A>::HeaderAndLoadCommandsAtom(const Options& opts, ld:
 							isSubFramework = true;
 					}
 				}
-				// LC_SUB_FRAMEWORK is in child, so do nothing in parent 
+				// LC_SUB_FRAMEWORK is in child, so do nothing in parent
 				if ( ! isSubFramework ) {
 					// this dylib also needs a sub_x load command
 					bool isFrameworkReExport = false;
@@ -400,34 +409,34 @@ uint64_t HeaderAndLoadCommandsAtom<A>::size() const
 	
 	sz += sizeof(macho_segment_command<P>) * this->segmentCount();
 	sz += sizeof(macho_section<P>) * this->nonHiddenSectionCount();
-
+	
 	if ( _hasDylibIDLoadCommand )
 		sz += alignedSize(sizeof(macho_dylib_command<P>) + strlen(_options.installPath()) + 1);
-		
+	
 	if ( _hasDyldInfoLoadCommand )
 		sz += sizeof(macho_dyld_info_command<P>);
-
+	
 	if ( _hasChainedFixupsLoadCommand )
 		sz += sizeof(linkedit_data_command);
-
+	
 	if ( _hasExportsTrieLoadCommand )
 		sz += sizeof(linkedit_data_command);
-
+	
 	if ( _hasSymbolTableLoadCommand )
 		sz += sizeof(macho_symtab_command<P>);
-		
+	
 	if ( _hasDynamicSymbolTableLoadCommand )
 		sz += sizeof(macho_dysymtab_command<P>);
 	
 	if ( _hasDyldLoadCommand )
 		sz += alignedSize(sizeof(macho_dylinker_command<P>) + strlen(_options.dyldInstallPath()) + 1);
-
-	if ( _hasRoutinesLoadCommand ) 
+	
+	if ( _hasRoutinesLoadCommand )
 		sz += sizeof(macho_routines_command<P>);
-		
+	
 	if ( _hasUUIDLoadCommand )
 		sz += sizeof(macho_uuid_command<P>);
-
+	
 	if ( _hasVersionLoadCommand ) {
 		if ( _hasVersionLoadCommand ) {
 			_options.platforms().forEach(^(ld::Platform platform, uint32_t minVersion, uint32_t sdkVersion, bool &stop) {
@@ -439,19 +448,19 @@ uint64_t HeaderAndLoadCommandsAtom<A>::size() const
 			});
 		}
 	}
-
+	
 	if ( _hasSourceVersionLoadCommand )
 		sz += sizeof(macho_source_version_command<P>);
-		
+	
 	if ( _hasThreadLoadCommand )
 		sz += this->threadLoadCommandSize();
-
+	
 	if ( _hasEntryPointLoadCommand )
 		sz += sizeof(macho_entry_point_command<P>);
-		
+	
 	if ( _hasEncryptionLoadCommand )
 		sz += sizeof(macho_encryption_info_command<P>);
-
+	
 	if ( _hasSplitSegInfoLoadCommand )
 		sz += sizeof(macho_linkedit_data_command<P>);
 	
@@ -472,11 +481,11 @@ uint64_t HeaderAndLoadCommandsAtom<A>::size() const
 	for (std::vector<const char*>::const_iterator it = _subLibraryNames.begin(); it != _subLibraryNames.end(); ++it) {
 		sz += alignedSize(sizeof(macho_sub_library_command<P>) + strlen(*it) + 1);
 	}
-
+	
 	for (std::vector<const char*>::const_iterator it = _subUmbrellaNames.begin(); it != _subUmbrellaNames.end(); ++it) {
 		sz += alignedSize(sizeof(macho_sub_umbrella_command<P>) + strlen(*it) + 1);
 	}
-
+	
 	if ( _allowableClientLoadCommmandsCount != 0 ) {
 		const std::vector<const char*>& clients = _options.allowableClients();
 		for (std::vector<const char*>::const_iterator it = clients.begin(); it != clients.end(); ++it) {
@@ -490,13 +499,13 @@ uint64_t HeaderAndLoadCommandsAtom<A>::size() const
 			sz += alignedSize(sizeof(macho_dylinker_command<P>) + strlen(*it) + 1);
 		}
 	}
-
+	
 	if ( _hasFunctionStartsLoadCommand )
 		sz += sizeof(macho_linkedit_data_command<P>);
-
+	
 	if ( _hasDataInCodeLoadCommand )
 		sz += sizeof(macho_linkedit_data_command<P>);
-
+	
 	if ( !_linkerOptions.empty() ) {
 		for (ld::relocatable::File::LinkerOptionsList::const_iterator it = _linkerOptions.begin(); it != _linkerOptions.end(); ++it) {
 			uint32_t s = sizeof(macho_linker_option_command<P>);
@@ -510,7 +519,10 @@ uint64_t HeaderAndLoadCommandsAtom<A>::size() const
 	
 	if ( _hasOptimizationHints )
 		sz += sizeof(macho_linkedit_data_command<P>);
-		
+	
+	if ( _hasCodeSignature )
+		sz += sizeof(macho_linkedit_data_command<P>);
+	
 	return sz;
 }
 
@@ -521,44 +533,44 @@ uint32_t HeaderAndLoadCommandsAtom<A>::commandsCount() const
 	
 	if ( _hasDylibIDLoadCommand )
 		++count;
-		
+	
 	if ( _hasDyldInfoLoadCommand )
 		++count;
 	
 	if ( _hasChainedFixupsLoadCommand )
 		++count;
-
+	
 	if ( _hasExportsTrieLoadCommand )
 		++count;
-
+	
 	if ( _hasSymbolTableLoadCommand )
 		++count;
-		
+	
 	if ( _hasDynamicSymbolTableLoadCommand )
 		++count;
 	
 	if ( _hasDyldLoadCommand )
 		++count;
-		
-	if ( _hasRoutinesLoadCommand ) 
+	
+	if ( _hasRoutinesLoadCommand )
 		++count;
-		
+	
 	if ( _hasUUIDLoadCommand )
 		++count;
-
+	
 	if ( _hasVersionLoadCommand ) {
 		count += _options.platforms().count();
 	}
-
+	
 	if ( _hasSourceVersionLoadCommand )
 		++count;
-		
+	
 	if ( _hasThreadLoadCommand )
 		++count;
 	
 	if ( _hasEntryPointLoadCommand )
 		++count;
-		
+	
 	if ( _hasEncryptionLoadCommand )
 		++count;
 	
@@ -566,7 +578,7 @@ uint32_t HeaderAndLoadCommandsAtom<A>::commandsCount() const
 		++count;
 	
 	count += _dylibLoadCommmandsCount;
-
+	
 	count += _options.rpaths().size();
 	
 	if ( _hasSubFrameworkLoadCommand )
@@ -575,26 +587,29 @@ uint32_t HeaderAndLoadCommandsAtom<A>::commandsCount() const
 	count += _subLibraryNames.size();
 	
 	count += _subUmbrellaNames.size();
-
+	
 	count += _allowableClientLoadCommmandsCount;
 	
 	count += _dyldEnvironExrasCount;
 	
 	if ( _hasFunctionStartsLoadCommand )
 		++count;
-
+	
 	if ( _hasDataInCodeLoadCommand )
 		++count;
-
+	
 	if ( !_linkerOptions.empty() ) {
 		for (ld::relocatable::File::LinkerOptionsList::const_iterator it = _linkerOptions.begin(); it != _linkerOptions.end(); ++it) {
 			++count;
 		}
 	}
-
+	
 	if ( _hasOptimizationHints )
 		++count;
-		
+	
+	if ( _hasCodeSignature )
+		++count;
+	
 	return count;
 }
 
@@ -632,12 +647,12 @@ uint32_t HeaderAndLoadCommandsAtom<A>::flags() const
 	else {
 		if ( _options.outputKind() == Options::kStaticExecutable ) {
 			bits |= MH_NOUNDEFS;
-			if ( _options.positionIndependentExecutable() ) 
+			if ( _options.positionIndependentExecutable() )
 				bits |= MH_PIE;
 		}
 		else if ( _options.outputKind() == Options::kPreload ) {
 			bits |= MH_NOUNDEFS;
-			if ( _options.positionIndependentExecutable() ) 
+			if ( _options.positionIndependentExecutable() )
 				bits |= MH_PIE;
 		}
 		else {
@@ -652,18 +667,18 @@ uint32_t HeaderAndLoadCommandsAtom<A>::flags() const
 					bits |= MH_FORCE_FLAT;
 					break;
 			}
-			if ( _state.hasWeakExternalSymbols || _writer.overridesWeakExternalSymbols )
+			if ( _state.hasWeakExternalSymbols || _writer.overridesWeakExternalSymbols || _writer.reExportsWeakDefSymbols )
 				bits |= MH_WEAK_DEFINES;
 			if ( _writer.usesWeakExternalSymbols || _state.hasWeakExternalSymbols )
 				bits |= MH_BINDS_TO_WEAK;
-			if ( (_options.outputKind() == Options::kDynamicLibrary) 
-					&& _writer._noReExportedDylibs 
-					&& _options.useSimplifiedDylibReExports() ) {
+			if ( (_options.outputKind() == Options::kDynamicLibrary)
+				&& _writer._noReExportedDylibs
+				&& _options.useSimplifiedDylibReExports() ) {
 				bits |= MH_NO_REEXPORTED_DYLIBS;
 			}
-			if ( _options.positionIndependentExecutable() && ! _writer.pieDisabled ) 
+			if ( _options.positionIndependentExecutable() && ! _writer.pieDisabled )
 				bits |= MH_PIE;
-			if ( _options.markAutoDeadStripDylib() ) 
+			if ( _options.markAutoDeadStripDylib() )
 				bits |= MH_DEAD_STRIPPABLE_DYLIB;
 			if ( _state.hasThreadLocalVariableDefinitions )
 				bits |= MH_HAS_TLV_DESCRIPTORS;
@@ -684,11 +699,17 @@ template <> uint32_t HeaderAndLoadCommandsAtom<x86>::magic() const		{ return MH_
 template <> uint32_t HeaderAndLoadCommandsAtom<x86_64>::magic() const	{ return MH_MAGIC_64; }
 template <> uint32_t HeaderAndLoadCommandsAtom<arm>::magic() const		{ return MH_MAGIC; }
 template <> uint32_t HeaderAndLoadCommandsAtom<arm64>::magic() const		{ return MH_MAGIC_64; }
+#if SUPPORT_ARCH_arm64_32
+template <> uint32_t HeaderAndLoadCommandsAtom<arm64_32>::magic() const		{ return MH_MAGIC; }
+#endif
 
 template <> uint32_t HeaderAndLoadCommandsAtom<x86>::cpuType() const	{ return CPU_TYPE_I386; }
 template <> uint32_t HeaderAndLoadCommandsAtom<x86_64>::cpuType() const	{ return CPU_TYPE_X86_64; }
 template <> uint32_t HeaderAndLoadCommandsAtom<arm>::cpuType() const	{ return CPU_TYPE_ARM; }
 template <> uint32_t HeaderAndLoadCommandsAtom<arm64>::cpuType() const	{ return CPU_TYPE_ARM64; }
+#if SUPPORT_ARCH_arm64_32
+template <> uint32_t HeaderAndLoadCommandsAtom<arm64_32>::cpuType() const	{ return CPU_TYPE_ARM64_32; }
+#endif
 
 
 template <>
@@ -718,6 +739,13 @@ uint32_t HeaderAndLoadCommandsAtom<arm64>::cpuSubType() const
 	return _state.cpuSubType;
 }
 
+#if SUPPORT_ARCH_arm64_32
+template <>
+uint32_t HeaderAndLoadCommandsAtom<arm64_32>::cpuSubType() const
+{
+	return CPU_SUBTYPE_ARM64_32_V8;
+}
+#endif
 
 
 template <typename A>
@@ -728,7 +756,7 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copySingleSegmentLoadCommand(uint8_t* p) 
 	macho_segment_command<P>* cmd = (macho_segment_command<P>*)p;
 	cmd->set_cmd(macho_segment_command<P>::CMD);
 	cmd->set_segname("");
-	cmd->set_vmaddr(_options.baseAddress());	
+	cmd->set_vmaddr(_options.baseAddress());
 	cmd->set_vmsize(0);		// updated after sections set
 	cmd->set_fileoff(0);	// updated after sections set
 	cmd->set_filesize(0);	// updated after sections set
@@ -740,9 +768,9 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copySingleSegmentLoadCommand(uint8_t* p) 
 	macho_section<P>* msect = (macho_section<P>*)&p[sizeof(macho_segment_command<P>)];
 	for (std::vector<ld::Internal::FinalSection*>::iterator sit = _state.sections.begin(); sit != _state.sections.end(); ++sit)  {
 		ld::Internal::FinalSection* fsect = *sit;
-		if ( fsect->isSectionHidden() ) 
+		if ( fsect->isSectionHidden() )
 			continue;
-		if ( fsect->type() == ld::Section::typeTentativeDefs ) 
+		if ( fsect->type() == ld::Section::typeTentativeDefs )
 			continue;
 		msect->set_sectname(fsect->sectionName());
 		msect->set_segname(fsect->segmentName());
@@ -753,8 +781,8 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copySingleSegmentLoadCommand(uint8_t* p) 
 		msect->set_reloff((fsect->relocCount == 0) ? 0 : _writer.sectionRelocationsSection->fileOffset + fsect->relocStart * sizeof(macho_relocation_info<P>));
 		msect->set_nreloc(fsect->relocCount);
 		msect->set_flags(sectionFlags(fsect));
-		msect->set_reserved1(fsect->indirectSymTabStartIndex);	
-		msect->set_reserved2(fsect->indirectSymTabElementSize);	
+		msect->set_reserved1(fsect->indirectSymTabStartIndex);
+		msect->set_reserved2(fsect->indirectSymTabElementSize);
 		// update segment info
 		if ( cmd->fileoff() == 0 )
 			cmd->set_fileoff(fsect->fileOffset);
@@ -768,7 +796,7 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copySingleSegmentLoadCommand(uint8_t* p) 
 }
 
 struct SegInfo {
-												SegInfo(const char* n, const Options&);
+	SegInfo(const char* n, const Options&);
 	const char*									segName;
 	uint32_t									nonHiddenSectionCount;
 	uint32_t									nonSectCreateSections;
@@ -779,8 +807,8 @@ struct SegInfo {
 };
 
 
-SegInfo::SegInfo(const char* n, const Options& opts) 
-	: segName(n), nonHiddenSectionCount(0), nonSectCreateSections(0), maxProt(opts.maxSegProtection(n)), initProt(opts.initialSegProtection(n)), flags(0)
+SegInfo::SegInfo(const char* n, const Options& opts)
+: segName(n), nonHiddenSectionCount(0), nonSectCreateSections(0), maxProt(opts.maxSegProtection(n)), initProt(opts.initialSegProtection(n)), flags(0)
 {
 	if ( opts.readOnlyDataSegment(n) )
 		flags = SG_READ_ONLY;
@@ -867,6 +895,7 @@ uint32_t HeaderAndLoadCommandsAtom<A>::sectionFlags(ld::Internal::FinalSection* 
 			return S_REGULAR;
 		case ld::Section::typeObjCClassRefs:
 		case ld::Section::typeObjC2CategoryList:
+		case ld::Section::typeObjC2ClassList:
 			return S_REGULAR | S_ATTR_NO_DEAD_STRIP;
 		case ld::Section::typeZeroFill:
 			if ( _options.optimizeZeroFill() )
@@ -886,9 +915,13 @@ uint32_t HeaderAndLoadCommandsAtom<A>::sectionFlags(ld::Internal::FinalSection* 
 			else
 				return S_SYMBOL_STUBS | S_ATTR_SOME_INSTRUCTIONS | S_ATTR_PURE_INSTRUCTIONS;
 		case ld::Section::typeNonLazyPointer:
-			if ( _options.outputKind() == Options::kKextBundle  )
+			if ( _options.outputKind() == Options::kKextBundle  ) {
+#if SUPPORT_ARCH_arm64e
+				if ( _options.useAuthenticatedStubs() )
+					return S_NON_LAZY_SYMBOL_POINTERS;
+#endif
 				return S_REGULAR;
-			else if ( (_options.outputKind() == Options::kStaticExecutable) && _options.positionIndependentExecutable() )
+			} else if ( (_options.outputKind() == Options::kStaticExecutable) && _options.positionIndependentExecutable() )
 				return S_REGULAR;
 			else
 				return S_NON_LAZY_SYMBOL_POINTERS;
@@ -903,9 +936,9 @@ uint32_t HeaderAndLoadCommandsAtom<A>::sectionFlags(ld::Internal::FinalSection* 
 				return S_REGULAR | S_ATTR_SOME_INSTRUCTIONS | S_ATTR_PURE_INSTRUCTIONS;
 		case ld::Section::typeInitializerPointers:
 			// <rdar://problem/11456679> i386 kexts need different section type
-			if ( (_options.outputKind() == Options::kObjectFile) 
-					&& (strcmp(sect->sectionName(), "__constructor") == 0) 
-					&& (strcmp(sect->segmentName(), "__TEXT") == 0) )
+			if ( (_options.outputKind() == Options::kObjectFile)
+				&& (strcmp(sect->sectionName(), "__constructor") == 0)
+				&& (strcmp(sect->segmentName(), "__TEXT") == 0) )
 				return S_REGULAR;
 			else
 				return S_MOD_INIT_FUNC_POINTERS;
@@ -933,6 +966,8 @@ uint32_t HeaderAndLoadCommandsAtom<A>::sectionFlags(ld::Internal::FinalSection* 
 			return S_REGULAR;
 		case ld::Section::typeInitOffsets:
 			return S_INIT_FUNC_OFFSETS;
+		case ld::Section::typeInterposing:
+			return S_INTERPOSING;
 	}
 	return S_REGULAR;
 }
@@ -975,11 +1010,11 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copySegmentLoadCommands(uint8_t* p, uint8
 			segs.push_back(si);
 			lastSegName = sect->segmentName();
 		}
-		if ( ! sect->isSectionHidden() ) 
+		if ( ! sect->isSectionHidden() )
 			segs.back().nonHiddenSectionCount++;
 		if ( sect->type() != ld::Section::typeSectCreate )
 			segs.back().nonSectCreateSections++;
-
+		
 		segs.back().sections.push_back(sect);
 	}
 	// write out segment load commands for each section with trailing sections
@@ -1009,10 +1044,10 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copySegmentLoadCommands(uint8_t* p, uint8
 		segCmd->set_cmd(macho_segment_command<P>::CMD);
 		segCmd->set_cmdsize(sizeof(macho_segment_command<P>) + si.nonHiddenSectionCount*sizeof(macho_section<P>));
 		segCmd->set_segname(si.sections.front()->segmentName());
-		segCmd->set_vmaddr(si.sections.front()->address);		
-		segCmd->set_vmsize(vmsize);	
+		segCmd->set_vmaddr(si.sections.front()->address);
+		segCmd->set_vmsize(vmsize);
 		segCmd->set_fileoff(si.sections.front()->fileOffset);
-		segCmd->set_filesize(filesize); 
+		segCmd->set_filesize(filesize);
 		segCmd->set_maxprot(si.maxProt);
 		segCmd->set_initprot(si.initProt);
 		segCmd->set_nsects(si.nonHiddenSectionCount);
@@ -1030,17 +1065,17 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copySegmentLoadCommands(uint8_t* p, uint8
 				msect->set_size(fsect->size);
 				msect->set_offset(sectionTakesNoDiskSpace(fsect) ? 0 : fsect->fileOffset);
 				msect->set_align(fsect->alignment);
-				msect->set_reloff(0);		
+				msect->set_reloff(0);
 				msect->set_nreloc(0);
 				msect->set_flags(sectionFlags(fsect));
-				msect->set_reserved1(fsect->indirectSymTabStartIndex);	
-				msect->set_reserved2(fsect->indirectSymTabElementSize);	
+				msect->set_reserved1(fsect->indirectSymTabStartIndex);
+				msect->set_reserved2(fsect->indirectSymTabElementSize);
 				p += sizeof(macho_section<P>);
 				++msect;
 			}
 		}
 	}
-
+	
 	return p;
 }
 
@@ -1073,7 +1108,7 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyDynamicSymbolTableLoadCommand(uint8_t
 	dynamicSymbolTableCmd->set_nextdefsym(_writer._globalSymbolsCount);
 	dynamicSymbolTableCmd->set_iundefsym(dynamicSymbolTableCmd->iextdefsym()+dynamicSymbolTableCmd->nextdefsym());
 	dynamicSymbolTableCmd->set_nundefsym(_writer._importSymbolsCount);
-
+	
 	// FIX ME: support for 10.3 dylibs which need modules
 	//if ( fWriter.fModuleInfoAtom != NULL ) {
 	//	dynamicSymbolTableCmd->set_tocoff(fWriter.fModuleInfoAtom->getTableOfContentsFileOffset());
@@ -1083,11 +1118,11 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyDynamicSymbolTableLoadCommand(uint8_t
 	//	dynamicSymbolTableCmd->set_extrefsymoff(fWriter.fModuleInfoAtom->getReferencesFileOffset());
 	//	dynamicSymbolTableCmd->set_nextrefsyms(fWriter.fModuleInfoAtom->getReferencesCount());
 	//}
-
+	
 	bool hasIndirectSymbols = ( (_writer.indirectSymbolTableSection != NULL) && (_writer.indirectSymbolTableSection->size != 0) );
 	dynamicSymbolTableCmd->set_indirectsymoff(hasIndirectSymbols ? _writer.indirectSymbolTableSection->fileOffset : 0);
 	dynamicSymbolTableCmd->set_nindirectsyms( hasIndirectSymbols ? _writer.indirectSymbolTableSection->size/sizeof(uint32_t) : 0);
-
+	
 	// FIX ME: support for classic relocations
 	if ( _options.outputKind() != Options::kObjectFile ) {
 		bool hasExternalRelocs = ( (_writer.externalRelocationsSection != NULL) && (_writer.externalRelocationsSection->size != 0) );
@@ -1137,12 +1172,12 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyExportsTrieLoadCommand(uint8_t* p) co
 {
 	// build LC_DYLD_EXPORTS_TRIE command
 	linkedit_data_command*  cmd = (linkedit_data_command*)p;
-
+	
 	cmd->cmd 		= LC_DYLD_EXPORTS_TRIE;
 	cmd->cmdsize	= sizeof(linkedit_data_command);
 	cmd->dataoff 	= _writer.exportSection->fileOffset;
 	cmd->datasize   = _writer.exportSection->size;
-
+	
 	return p + sizeof(linkedit_data_command);
 }
 
@@ -1151,12 +1186,12 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyChainedFixupsLoadCommand(uint8_t* p) 
 {
 	// build LC_DYLD_CHAINED_FIXUPS command
 	linkedit_data_command*  cmd = (linkedit_data_command*)p;
-
+	
 	cmd->cmd 		= LC_DYLD_CHAINED_FIXUPS;
 	cmd->cmdsize	= sizeof(linkedit_data_command);
 	cmd->dataoff 	= _writer.chainInfoSection->fileOffset;
 	cmd->datasize   = _writer.chainInfoSection->size;
-
+	
 	return p + sizeof(linkedit_data_command);
 }
 
@@ -1195,7 +1230,7 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyDylibIDLoadCommand(uint8_t* p) const
 template <typename A>
 uint8_t* HeaderAndLoadCommandsAtom<A>::copyRoutinesLoadCommand(uint8_t* p) const
 {
-	pint_t initAddr = _state.entryPoint->finalAddress(); 
+	pint_t initAddr = _state.entryPoint->finalAddress();
 	if ( _state.entryPoint->isThumb() )
 		initAddr |= 1ULL;
 	macho_routines_command<P>* cmd = (macho_routines_command<P>*)p;
@@ -1207,7 +1242,7 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyRoutinesLoadCommand(uint8_t* p) const
 
 
 template <typename A>
-void HeaderAndLoadCommandsAtom<A>::recopyUUIDCommand() 
+void HeaderAndLoadCommandsAtom<A>::recopyUUIDCommand()
 {
 	assert(_uuidCmdInOutputBuffer != NULL);
 	_uuidCmdInOutputBuffer->set_uuid(_uuid);
@@ -1242,14 +1277,15 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyVersionLoadCommand(uint8_t* p, ld::Pl
 
 
 template <typename A>
-	uint8_t* HeaderAndLoadCommandsAtom<A>::copyBuildVersionLoadCommand(uint8_t* p, ld::Platform platform, uint32_t minVersion, uint32_t sdkVersion) const
+uint8_t* HeaderAndLoadCommandsAtom<A>::copyBuildVersionLoadCommand(uint8_t* p, ld::Platform platform, uint32_t minVersion, uint32_t sdkVersion) const
 {
 	macho_build_version_command<P>* cmd = (macho_build_version_command<P>*)p;
-
-	// temp hack until iOSMac SDK version plumbed through
-	if (platform == ld::Platform::iOSMac)
+	
+	// If we are on iOSMac and see a pre-13.0 SDK version it means we are using an old clang driver and should set the version
+	// to 13.0
+	if (platform == ld::Platform::iOSMac && sdkVersion < 0x000D0000) {
 		sdkVersion = 0x000D0000;
-
+	}
 	cmd->set_cmd(LC_BUILD_VERSION);
 	cmd->set_cmdsize(alignedSize(sizeof(macho_build_version_command<P>) + sizeof(macho_build_tool_version<P>)*_toolsVersions.size()));
 	cmd->set_platform((uint32_t)platform);
@@ -1262,7 +1298,7 @@ template <typename A>
 		tools->set_version(tool & 0xFFFFFFFF);
 		++tools;
 	}
-
+	
 	return p + cmd->cmdsize();
 }
 
@@ -1288,7 +1324,7 @@ template <>
 uint8_t* HeaderAndLoadCommandsAtom<x86>::copyThreadsLoadCommand(uint8_t* p) const
 {
 	assert(_state.entryPoint != NULL);
-	pint_t start = _state.entryPoint->finalAddress(); 
+	pint_t start = _state.entryPoint->finalAddress();
 	macho_thread_command<P>* cmd = (macho_thread_command<P>*)p;
 	cmd->set_cmd(LC_UNIXTHREAD);
 	cmd->set_cmdsize(threadLoadCommandSize());
@@ -1310,13 +1346,13 @@ template <>
 uint8_t* HeaderAndLoadCommandsAtom<x86_64>::copyThreadsLoadCommand(uint8_t* p) const
 {
 	assert(_state.entryPoint != NULL);
-	pint_t start = _state.entryPoint->finalAddress(); 
+	pint_t start = _state.entryPoint->finalAddress();
 	macho_thread_command<P>* cmd = (macho_thread_command<P>*)p;
 	cmd->set_cmd(LC_UNIXTHREAD);
 	cmd->set_cmdsize(threadLoadCommandSize());
 	cmd->set_flavor(4);				// x86_THREAD_STATE64
 	cmd->set_count(42);				// x86_THREAD_STATE64_COUNT
-	cmd->set_thread_register(16, start);		// rip 
+	cmd->set_thread_register(16, start);		// rip
 	if ( _options.hasCustomStack() )
 		cmd->set_thread_register(7, _options.customStackAddr());	// r1
 	return p + threadLoadCommandSize();
@@ -1332,14 +1368,14 @@ template <>
 uint8_t* HeaderAndLoadCommandsAtom<arm>::copyThreadsLoadCommand(uint8_t* p) const
 {
 	assert(_state.entryPoint != NULL);
-	pint_t start = _state.entryPoint->finalAddress(); 
+	pint_t start = _state.entryPoint->finalAddress();
 	if ( _state.entryPoint->isThumb() )
 		start |= 1ULL;
 	macho_thread_command<P>* cmd = (macho_thread_command<P>*)p;
 	cmd->set_cmd(LC_UNIXTHREAD);
 	cmd->set_cmdsize(threadLoadCommandSize());
-	cmd->set_flavor(1);			
-	cmd->set_count(17);	
+	cmd->set_flavor(1);
+	cmd->set_count(17);
 	cmd->set_thread_register(15, start);		// pc
 	if ( _options.hasCustomStack() )
 		cmd->set_thread_register(13, _options.customStackAddr());	// sp
@@ -1357,18 +1393,41 @@ template <>
 uint8_t* HeaderAndLoadCommandsAtom<arm64>::copyThreadsLoadCommand(uint8_t* p) const
 {
 	assert(_state.entryPoint != NULL);
-	pint_t start = _state.entryPoint->finalAddress(); 
+	pint_t start = _state.entryPoint->finalAddress();
 	macho_thread_command<P>* cmd = (macho_thread_command<P>*)p;
 	cmd->set_cmd(LC_UNIXTHREAD);
 	cmd->set_cmdsize(threadLoadCommandSize());
 	cmd->set_flavor(6);	 // ARM_THREAD_STATE64
 	cmd->set_count(68);	 // ARM_EXCEPTION_STATE64_COUNT
-	cmd->set_thread_register(32, start);		// pc 
+	cmd->set_thread_register(32, start);		// pc
 	if ( _options.hasCustomStack() )
-		cmd->set_thread_register(31, _options.customStackAddr());	// sp 
+		cmd->set_thread_register(31, _options.customStackAddr());	// sp
 	return p + threadLoadCommandSize();
 }
 
+#if SUPPORT_ARCH_arm64_32
+template <>
+uint32_t HeaderAndLoadCommandsAtom<arm64_32>::threadLoadCommandSize() const
+{
+	return this->alignedSize(16 + 34 * 8); // base size + ARM_EXCEPTION_STATE64_COUNT * 4
+}
+
+template <>
+uint8_t* HeaderAndLoadCommandsAtom<arm64_32>::copyThreadsLoadCommand(uint8_t* p) const
+{
+	assert(_state.entryPoint != NULL);
+	pint_t start = _state.entryPoint->finalAddress();
+	macho_thread_command<P>* cmd = (macho_thread_command<P>*)p;
+	cmd->set_cmd(LC_UNIXTHREAD);
+	cmd->set_cmdsize(threadLoadCommandSize());
+	cmd->set_flavor(6);	 // ARM_THREAD_STATE64
+	cmd->set_count(68);	 // ARM_EXCEPTION_STATE64_COUNT
+	cmd->set_thread_register(64, start);		// pc
+	if ( _options.hasCustomStack() )
+		cmd->set_thread_register(62, _options.customStackAddr());	// sp
+	return p + threadLoadCommandSize();
+}
+#endif
 
 template <typename A>
 uint8_t* HeaderAndLoadCommandsAtom<A>::copyEntryPointLoadCommand(uint8_t* p) const
@@ -1377,7 +1436,7 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyEntryPointLoadCommand(uint8_t* p) con
 	cmd->set_cmd(LC_MAIN);
 	cmd->set_cmdsize(sizeof(macho_entry_point_command<P>));
 	assert(_state.entryPoint != NULL);
-	pint_t start = _state.entryPoint->finalAddress(); 
+	pint_t start = _state.entryPoint->finalAddress();
 	if ( _state.entryPoint->isThumb() )
 		start |= 1ULL;
 	cmd->set_entryoff(start - this->finalAddress());
@@ -1425,9 +1484,7 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyDylibLoadCommand(uint8_t* p, const ld
 		warning("cannot weak upward link.  Dropping weak for %s", dylib->installPath());
 	if ( weakLink && reExport )
 		warning("cannot weak re-export a dylib.  Dropping weak for %s", dylib->installPath());
-	if ( dylib->willBeLazyLoadedDylib() )
-		cmd->set_cmd(LC_LAZY_LOAD_DYLIB);
-	else if ( reExport )
+	if ( reExport )
 		cmd->set_cmd(LC_REEXPORT_DYLIB);
 	else if ( upward )
 		cmd->set_cmd(LC_LOAD_UPWARD_DYLIB);
@@ -1558,11 +1615,9 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyLinkerOptionsLoadCommand(uint8_t* p, 
 		buffer += (len + 1);
 	}
 	sz = alignedSize(sz);
-	cmd->set_cmdsize(sz);	
+	cmd->set_cmdsize(sz);
 	return p + sz;
 }
-
-
 
 template <typename A>
 uint8_t* HeaderAndLoadCommandsAtom<A>::copyOptimizationHintsLoadCommand(uint8_t* p) const
@@ -1576,20 +1631,39 @@ uint8_t* HeaderAndLoadCommandsAtom<A>::copyOptimizationHintsLoadCommand(uint8_t*
 }
 
 template <typename A>
+uint8_t* HeaderAndLoadCommandsAtom<A>::copyCodeSignatureLoadCommand(uint8_t* p) const
+{
+	macho_linkedit_data_command<P>* cmd = (macho_linkedit_data_command<P>*)p;
+	cmd->set_cmd(LC_CODE_SIGNATURE);
+	cmd->set_cmdsize(sizeof(macho_linkedit_data_command<P>));
+	cmd->set_dataoff(_writer.codeSignatureSection->fileOffset);
+	cmd->set_datasize(_writer.codeSignatureSection->size);
+	return p + sizeof(macho_linkedit_data_command<P>);
+}
+
+template <typename A>
 void HeaderAndLoadCommandsAtom<A>::copyRawContent(uint8_t buffer[]) const
 {
 	macho_header<P>* mh = (macho_header<P>*)buffer;
 	bzero(buffer, this->size());
-
+	
 	// copy mach_header
 	mh->set_magic(this->magic());
 	mh->set_cputype(this->cpuType());
 	mh->set_cpusubtype(this->cpuSubType());
+	if (_state.hasArm64eABIVersion) {
+		if ( _options.dyldLoadsOutput() && !_options.platforms().minOS(ld::version2020Fall) ) {
+			// when targeting older OSs (e.g. iOS 13), don't set ABI bits
+		}
+		else {
+			mh->set_cpusubtypeflags(_state.arm64eABIVersion);
+		}
+	}
 	mh->set_filetype(this->fileType());
 	mh->set_ncmds(this->commandsCount());
 	mh->set_sizeofcmds(this->size()-sizeof(macho_header<P>));
 	mh->set_flags(this->flags());
-
+	
 	// copy load commands
 	__block uint8_t* p = &buffer[sizeof(macho_header<P>)];
 	
@@ -1600,31 +1674,31 @@ void HeaderAndLoadCommandsAtom<A>::copyRawContent(uint8_t buffer[]) const
 	
 	if ( _hasDylibIDLoadCommand )
 		p = this->copyDylibIDLoadCommand(p);
-		
+	
 	if ( _hasDyldInfoLoadCommand )
 		p = this->copyDyldInfoLoadCommand(p);
-		
+	
 	if ( _hasChainedFixupsLoadCommand )
 		p = this->copyChainedFixupsLoadCommand(p);
-
+	
 	if ( _hasExportsTrieLoadCommand )
 		p = this->copyExportsTrieLoadCommand(p);
-
+	
 	if ( _hasSymbolTableLoadCommand )
 		p = this->copySymbolTableLoadCommand(p, buffer);
-
+	
 	if ( _hasDynamicSymbolTableLoadCommand )
 		p = this->copyDynamicSymbolTableLoadCommand(p);
 	
 	if ( _hasDyldLoadCommand )
 		p = this->copyDyldLoadCommand(p);
-		
-	if ( _hasRoutinesLoadCommand ) 
+	
+	if ( _hasRoutinesLoadCommand )
 		p = this->copyRoutinesLoadCommand(p);
-		
+	
 	if ( _hasUUIDLoadCommand )
 		p = this->copyUUIDLoadCommand(p);
-
+	
 	if ( _hasVersionLoadCommand ) {
 		_options.platforms().forEach(^(ld::Platform platform, uint32_t minVersion, uint32_t sdkVersion, bool &stop) {
 			if (_options.shouldUseBuildVersion(platform, minVersion)) {
@@ -1634,26 +1708,26 @@ void HeaderAndLoadCommandsAtom<A>::copyRawContent(uint8_t buffer[]) const
 			}
 		});
 	}
-
+	
 	if ( _hasSourceVersionLoadCommand )
 		p = this->copySourceVersionLoadCommand(p);
-
+	
 	if ( _hasThreadLoadCommand )
 		p = this->copyThreadsLoadCommand(p);
 	
 	if ( _hasEntryPointLoadCommand )
 		p = this->copyEntryPointLoadCommand(p);
-		
+	
 	if ( _hasEncryptionLoadCommand )
 		p = this->copyEncryptionLoadCommand(p);
 	
 	if ( _hasSplitSegInfoLoadCommand )
 		p = this->copySplitSegInfoLoadCommand(p);
-		
+	
 	for (uint32_t ord=1; ord <= _writer.dylibCount(); ++ord) {
 		p = this->copyDylibLoadCommand(p, _writer.dylibByOrdinal(ord));
 	}
-
+	
 	if ( _hasRPathLoadCommands ) {
 		const std::vector<const char*>& rpaths = _options.rpaths();
 		for (std::vector<const char*>::const_iterator it = rpaths.begin(); it != rpaths.end(); ++it) {
@@ -1678,20 +1752,20 @@ void HeaderAndLoadCommandsAtom<A>::copyRawContent(uint8_t buffer[]) const
 			p = this->copyAllowableClientLoadCommand(p, *it);
 		}
 	}
-
+	
 	if ( _dyldEnvironExrasCount != 0 ) {
 		const std::vector<const char*>& extras = _options.dyldEnvironExtras();
 		for (std::vector<const char*>::const_iterator it = extras.begin(); it != extras.end(); ++it) {
 			p = this->copyDyldEnvLoadCommand(p, *it);
 		}
 	}
-
+	
 	if ( _hasFunctionStartsLoadCommand )
 		p = this->copyFunctionStartsLoadCommand(p);
-
+	
 	if ( _hasDataInCodeLoadCommand )
 		p = this->copyDataInCodeLoadCommand(p);
-
+	
 	if ( !_linkerOptions.empty() ) {
 		for (ld::relocatable::File::LinkerOptionsList::const_iterator it = _linkerOptions.begin(); it != _linkerOptions.end(); ++it) {
 			p = this->copyLinkerOptionsLoadCommand(p, *it);
@@ -1700,12 +1774,14 @@ void HeaderAndLoadCommandsAtom<A>::copyRawContent(uint8_t buffer[]) const
 	
 	if ( _hasOptimizationHints )
 		p = this->copyOptimizationHintsLoadCommand(p);
- 
+	
+	if ( _hasCodeSignature )
+		p = this->copyCodeSignatureLoadCommand(p);
 }
 
 
 
-} // namespace tool 
-} // namespace ld 
+} // namespace tool
+} // namespace ld
 
 #endif // __HEADER_LOAD_COMMANDS_HPP__

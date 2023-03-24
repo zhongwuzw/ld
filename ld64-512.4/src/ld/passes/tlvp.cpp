@@ -21,7 +21,7 @@
  *
  * @APPLE_LICENSE_HEADER_END@
  */
-
+#define __DARWIN_BYTE_ORDER __DARWIN_LITTLE_ENDIAN
 
 #include <stdint.h>
 #include <math.h>

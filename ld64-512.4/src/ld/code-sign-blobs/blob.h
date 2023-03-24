@@ -1,15 +1,15 @@
 /*
  * Copyright (c) 2006 Apple Computer, Inc. All Rights Reserved.
- * 
+ *
  * @APPLE_LICENSE_HEADER_START@
- * 
+ *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
  * compliance with the License. Please obtain a copy of the License at
  * http://www.opensource.apple.com/apsl/ and read it before using this
  * file.
- * 
+ *
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -17,10 +17,10 @@
  * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
  * Please see the License for the specific language governing rights and
  * limitations under the License.
- * 
+ *
  * @APPLE_LICENSE_HEADER_END@
  */
- 
+
 //
 // blob - generic extensible binary blob frame
 //
@@ -56,11 +56,11 @@ enum {
 
 enum {
 	// Code Signing magic blob types (from <Security/CSCommonPriv.h>)
-    kSecCodeMagicRequirement = 0xfade0c00,      /* single requirement */
-    kSecCodeMagicRequirementSet = 0xfade0c01,   /* requirement set */
-    kSecCodeMagicEmbeddedSignature = 0xfade0cc0, /* single-architecture embedded signature */
+	kSecCodeMagicRequirement = 0xfade0c00,      /* single requirement */
+	kSecCodeMagicRequirementSet = 0xfade0c01,   /* requirement set */
+	kSecCodeMagicEmbeddedSignature = 0xfade0cc0, /* single-architecture embedded signature */
 	
-	kSecCodeMagicDRList = 0xfade0c05 
+	kSecCodeMagicDRList = 0xfade0c05
 };
 
 enum {
@@ -76,7 +76,7 @@ class BlobCore {
 public:
 	typedef uint32_t Offset;
 	typedef uint32_t Magic;
-
+	
 	Magic magic() const { return mMagic; }
 	size_t length() const { return mLength; }
 	
@@ -84,7 +84,7 @@ public:
 	{ mMagic = mag; mLength = len; }
 	
 	bool validateBlob(Magic magic, size_t minSize = 0, size_t maxSize = 0) const;
-
+	
 	template <class T, class Offset>
 	T *at(Offset offset)
 	{ return LowLevelMemoryUtilities::increment<T>(this, offset); }
@@ -100,14 +100,14 @@ public:
 	template <class Base, class Offset>
 	bool contains(Base *ptr, Offset size) const
 	{ return contains(LowLevelMemoryUtilities::difference(ptr, this), size); }
-
+	
 	char *stringAt(Offset offset);
 	const char *stringAt(Offset offset) const;
-
+	
 	void *data()						{ return this; }
 	const void *data() const			{ return this; }
 	void length(size_t size)			{ mLength = size; }
-
+	
 	template <class BlobType>
 	bool is() const { return magic() == BlobType::typeMagic; }
 	
@@ -182,13 +182,13 @@ public:
 	
 	BlobType *clone() const
 	{ assert(validateBlob()); return specific(this->BlobCore::clone());	}
-
+	
 	static BlobType *readBlob(int fd)
 	{ return specific(BlobCore::readBlob(fd, _magic, sizeof(BlobType), 0), true); }
-
+	
 	static BlobType *readBlob(int fd, size_t offset, size_t maxSize = 0)
 	{ return specific(BlobCore::readBlob(fd, offset, _magic, sizeof(BlobType), maxSize), true); }
-
+	
 	static BlobType *readBlob(std::FILE *file)
 	{ return specific(BlobCore::readBlob(file, _magic, sizeof(BlobType), 0), true); }
 };

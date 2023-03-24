@@ -1,16 +1,16 @@
-/* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
+/* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*-
  *
  * Copyright (c) 2005 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
+ *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
  * compliance with the License. Please obtain a copy of the License at
  * http://www.opensource.apple.com/apsl/ and read it before using this
  * file.
- * 
+ *
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -18,7 +18,7 @@
  * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
  * Please see the License for the specific language governing rights and
  * limitations under the License.
- * 
+ *
  * @APPLE_LICENSE_HEADER_END@
  */
 #ifndef __FILE_ABSTRACTION__
@@ -67,19 +67,19 @@ public:
 	static uint64_t get64(const uint64_t& from)				INLINE { return OSReadBigInt64(&from, 0); }
 	static void		set64(uint64_t& into, uint64_t value)	INLINE { OSWriteBigInt64(&into, 0, value); }
 	
-	static uint32_t	getBits(const uint32_t& from, 
-						uint8_t firstBit, uint8_t bitCount)	INLINE { return getBitsRaw(get32(from), firstBit, bitCount); }
+	static uint32_t	getBits(const uint32_t& from,
+							uint8_t firstBit, uint8_t bitCount)	INLINE { return getBitsRaw(get32(from), firstBit, bitCount); }
 	static void		setBits(uint32_t& into, uint32_t value,
-						uint8_t firstBit, uint8_t bitCount)	INLINE { uint32_t temp = get32(into); setBitsRaw(temp, value, firstBit, bitCount); set32(into, temp); }
-
-	static uint32_t	getBitsRaw(const uint32_t& from, 
-						uint8_t firstBit, uint8_t bitCount)	INLINE { return ((from >> (32-firstBit-bitCount)) & ((1<<bitCount)-1)); }
+							uint8_t firstBit, uint8_t bitCount)	INLINE { uint32_t temp = get32(into); setBitsRaw(temp, value, firstBit, bitCount); set32(into, temp); }
+	
+	static uint32_t	getBitsRaw(const uint32_t& from,
+							   uint8_t firstBit, uint8_t bitCount)	INLINE { return ((from >> (32-firstBit-bitCount)) & ((1<<bitCount)-1)); }
 	static void		setBitsRaw(uint32_t& into, uint32_t value,
-						uint8_t firstBit, uint8_t bitCount)	INLINE { uint32_t temp = into; 
-																							const uint32_t mask = ((1<<bitCount)-1); 
-																							temp &= ~(mask << (32-firstBit-bitCount)); 
-																							temp |= ((value & mask) << (32-firstBit-bitCount)); 
-																							into = temp; }
+							   uint8_t firstBit, uint8_t bitCount)	INLINE { uint32_t temp = into;
+		const uint32_t mask = ((1<<bitCount)-1);
+		temp &= ~(mask << (32-firstBit-bitCount));
+		temp |= ((value & mask) << (32-firstBit-bitCount));
+		into = temp; }
 	enum { little_endian = 0 };
 };
 
@@ -95,20 +95,20 @@ public:
 	
 	static uint64_t get64(const uint64_t& from)				INLINE { return OSReadLittleInt64(&from, 0); }
 	static void		set64(uint64_t& into, uint64_t value)	INLINE { OSWriteLittleInt64(&into, 0, value); }
-
+	
 	static uint32_t	getBits(const uint32_t& from,
-						uint8_t firstBit, uint8_t bitCount)	INLINE { return getBitsRaw(get32(from), firstBit, bitCount); }
+							uint8_t firstBit, uint8_t bitCount)	INLINE { return getBitsRaw(get32(from), firstBit, bitCount); }
 	static void		setBits(uint32_t& into, uint32_t value,
-						uint8_t firstBit, uint8_t bitCount)	INLINE { uint32_t temp = get32(into); setBitsRaw(temp, value, firstBit, bitCount); set32(into, temp); }
-
+							uint8_t firstBit, uint8_t bitCount)	INLINE { uint32_t temp = get32(into); setBitsRaw(temp, value, firstBit, bitCount); set32(into, temp); }
+	
 	static uint32_t	getBitsRaw(const uint32_t& from,
-						uint8_t firstBit, uint8_t bitCount)	INLINE { return ((from >> firstBit) & ((1<<bitCount)-1)); }
+							   uint8_t firstBit, uint8_t bitCount)	INLINE { return ((from >> firstBit) & ((1<<bitCount)-1)); }
 	static void		setBitsRaw(uint32_t& into, uint32_t value,
-						uint8_t firstBit, uint8_t bitCount)	INLINE {  uint32_t temp = into; 
-																							const uint32_t mask = ((1<<bitCount)-1); 
-																							temp &= ~(mask << firstBit); 
-																							temp |= ((value & mask) << firstBit); 
-																							into = temp; }
+							   uint8_t firstBit, uint8_t bitCount)	INLINE {  uint32_t temp = into;
+		const uint32_t mask = ((1<<bitCount)-1);
+		temp &= ~(mask << firstBit);
+		temp |= ((value & mask) << firstBit);
+		into = temp; }
 	enum { little_endian = 1 };
 };
 

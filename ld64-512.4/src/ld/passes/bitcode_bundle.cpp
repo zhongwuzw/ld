@@ -22,6 +22,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#include <sys/mman.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -58,7 +59,7 @@ class BitcodeAtom : public ld::Atom {
 public:
                                             BitcodeAtom();
                                             BitcodeAtom(BitcodeTempFile& tempfile);
-                                            ~BitcodeAtom()                  { free(_content); }
+                                            ~BitcodeAtom();
     virtual ld::File*						file() const					{ return NULL; }
     virtual const char*						name() const					{ return "bitcode bundle"; }
     virtual uint64_t						size() const					{ return _size; }
@@ -259,6 +260,16 @@ BitcodeAtom::BitcodeAtom(BitcodeTempFile& tempfile)
     tempfile._content = NULL;
 }
 
+BitcodeAtom::~BitcodeAtom() {
+    if ( _size > 0 && _content ) {
+        int ret = munmap(_content, _size);
+        if ( ret == -1 )
+            throwf("could not unmap bitcode temp file");
+    }
+    _size = 0;
+    _content = nullptr;
+}
+
 BitcodeTempFile::BitcodeTempFile(const char* path, bool deleteAfterRead = true)
     : _path(path), _deleteAfterRead(deleteAfterRead)
 {
@@ -267,18 +278,26 @@ BitcodeTempFile::BitcodeTempFile(const char* path, bool deleteAfterRead = true)
         throwf("could not open bitcode temp file: %s", path);
     struct stat stat_buf;
     ::fstat(fd, &stat_buf);
-    _content = (uint8_t*)malloc(stat_buf.st_size);
-    if ( _content == NULL )
-        throwf("could not process bitcode temp file: %s", path);
-    if ( read(fd, _content, stat_buf.st_size) != stat_buf.st_size )
-        throwf("could not read bitcode temp file: %s", path);
+
+    _content = nullptr;
+
+    // <rdar://problem/69643083> ld fails mapping if the file passed is `/dev/null`
+    if ( stat_buf.st_size > 0 ) {
+        _content = (uint8_t*)::mmap(NULL, stat_buf.st_size, PROT_READ, MAP_FILE | MAP_PRIVATE, fd, 0);
+        if ( _content == MAP_FAILED )
+            throwf("could not process bitcode temp file: %s, errno=%d", path, errno);
+    }
     ::close(fd);
     _size = stat_buf.st_size;
 }
 
 BitcodeTempFile::~BitcodeTempFile()
 {
-    free(_content);
+    if ( _size > 0 && _content) {
+        int ret = munmap(_content, _size);
+        if ( ret == -1 )
+            throwf("could not unmap temp file: %s, errno %d", _path, errno);
+    }
     if ( _deleteAfterRead ) {
         if ( ::unlink(_path) != 0 )
             throwf("could not remove temp file: %s", _path);
@@ -290,7 +309,6 @@ BitcodeObfuscator::BitcodeObfuscator()
 #if LTO_API_VERSION < 11
     throwf("compile-time libLTO (%d) didn't support -bitcode_hide_symbols", LTO_API_VERSION);
 #else
-    // check if apple internal libLTO is used
     if ( ::lto_get_version() == NULL )
         throwf("libLTO is not loaded");
     _lto_hide_symbols = (lto_codegen_func_t) dlsym(RTLD_DEFAULT, "lto_codegen_hide_symbols");
@@ -328,20 +346,6 @@ void BitcodeObfuscator::addMustPreserveSymbols(const char* name)
 
 void BitcodeObfuscator::bitcodeHideSymbols(ld::Bitcode* bc, const char* filePath, const char* outputPath)
 {
-#if LTO_API_VERSION >= 13 && LTO_APPLE_INTERNAL
-    lto_module_t module = ::lto_module_create_in_codegen_context(bc->getContent(), bc->getSize(), filePath, _obfuscator);
-    if ( module == NULL )
-        throwf("could not reparse object file %s in bitcode bundle: '%s', using libLTO version '%s'",
-               filePath, ::lto_get_error_message(), ::lto_get_version());
-    ::lto_codegen_set_module(_obfuscator, module);
-    (*_lto_hide_symbols)(_obfuscator);
-#if LTO_API_VERSION >= 15
-    ::lto_codegen_set_should_embed_uselists(_obfuscator, true);
-#endif
-    ::lto_codegen_write_merged_modules(_obfuscator, outputPath);
-    (*_lto_reset_context)(_obfuscator);
-#endif
-    return;
 }
 
 void BitcodeObfuscator::writeSymbolMap(const char *outputPath)
@@ -421,7 +425,7 @@ void BundleHandler::init()
     int f = ::open(oldXARPath.c_str(), O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
     if ( f == -1 )
         throwf("could not write file to temp directory: %s", _temp_dir);
-    if ( ::write(f, _file_buffer, _file_size) != (int)_file_size )
+    if ( ld::utils::write64(f, _file_buffer, _file_size) != (int)_file_size )
         throwf("failed to write content to temp file: %s", oldXARPath.c_str());
     ::close(f);
 
@@ -602,7 +606,7 @@ void SymbolListHandler::obfuscateAndWriteToPath(BitcodeObfuscator* obfuscator, c
     }
     exports_list += "\n";
     int f = ::open(path, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
-    if ( f == -1 || ::write(f, exports_list.data(), exports_list.size()) != (int)exports_list.size() )
+    if ( f == -1 || ld::utils::write64(f, exports_list.data(), exports_list.size()) != (int)exports_list.size() )
         throwf("failed to write content to temp file: %s", path);
     ::close(f);
 }
@@ -611,7 +615,7 @@ void FileHandler::obfuscateAndWriteToPath(BitcodeObfuscator *obfuscator, const c
 {
     initFile();
     int f = ::open(path, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
-    if ( f == -1 || ::write(f, _file_buffer, _file_size) != (int)_file_size )
+    if ( f == -1 || ld::utils::write64(f, _file_buffer, _file_size) != (int)_file_size )
         throwf("failed to write content to temp file: %s", path);
     ::close(f);
 }

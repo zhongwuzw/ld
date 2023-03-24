@@ -22,6 +22,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+
 /*
  __objc_nlclslist non lazy class list
  All the classes implemented in a given image file have a reference in a list stored in the "__DATA, __objc_classlist, regular, no_dead_strip" binary's section. This list allows the runtime system to keep track of all the classes stored in such file. However, not all of the classes need to be realized when the program starts up. That's why when a class implements a +load method, it also has a reference in a list stored in the "__DATA, __objc_nlclslist, regular, no_dead_strip" section.
@@ -35,7 +36,8 @@
  __objc_methtype  All method encoded type like : @24@0:8  、 @"NSString"
  
  */
- 
+
+
 // start temp HACK for cross builds
 extern "C" double log2 ( double );
 //#define __MATH__
@@ -94,6 +96,7 @@ extern "C" double log2 ( double );
 #include "passes/thread_starts.h"
 #include "passes/branch_shim.h"
 #include "passes/objc.h"
+#include "passes/objc_constants.h"
 #include "passes/dylibs.h"
 #include "passes/bitcode_bundle.h"
 #include "passes/code_dedup.h"
@@ -123,26 +126,27 @@ struct PerformanceStatistics {
 class InternalState : public ld::Internal
 {
 public:
-											InternalState(const Options& opts) : _options(opts), _atomsOrderedInSections(false) { }
+	InternalState(const Options& opts) : _options(opts), _atomsOrderedInSections(false) { }
 	virtual	ld::Internal::FinalSection*		addAtom(const ld::Atom& atom);
 	virtual ld::Internal::FinalSection*		getFinalSection(const ld::Section&);
-			ld::Internal::FinalSection*     getFinalSection(const char* seg, const char* sect, ld::Section::Type type);
+	ld::Internal::FinalSection*     getFinalSection(const char* seg, const char* sect, ld::Section::Type type);
 	
 	uint64_t								assignFileOffsets();
 	void									setSectionSizesAndAlignments();
 	void									sortSections();
 	void									markAtomsOrdered() { _atomsOrderedInSections = true; }
 	bool									hasReferenceToWeakExternal(const ld::Atom& atom);
-
+	
 	virtual									~InternalState() {}
 private:
-	bool									inMoveRWChain(const ld::Atom& atom, const char* filePath, const char*& dstSeg, bool& wildCardMatch);
+	bool									inMoveRWChain(const ld::Atom& atom, const char* filePath, bool followedBackBranch, const char*& dstSeg, bool& wildCardMatch);
 	bool									inMoveROChain(const ld::Atom& atom, const char* filePath, const char*& dstSeg, bool& wildCardMatch);
-
-	class FinalSection : public ld::Internal::FinalSection 
+	bool									inMoveAuthChain(const ld::Atom& atom, bool followedBackBranch, const char*& dstSeg);
+	
+	class FinalSection : public ld::Internal::FinalSection
 	{
 	public:
-									FinalSection(const ld::Section& sect, uint32_t sectionsSeen, const Options&);
+		FinalSection(const ld::Section& sect, uint32_t sectionsSeen, const Options&);
 		static const ld::Section&	outputSection(const ld::Section& sect, bool mergeZeroFill);
 		static const ld::Section&	objectOutputSection(const ld::Section& sect, const Options&);
 	private:
@@ -151,7 +155,7 @@ private:
 		static uint32_t		segmentOrder(const ld::Section& sect, const Options& options);
 		uint32_t			_segmentOrder;
 		uint32_t			_sectionOrder;
-
+		
 		static std::vector<const char*> _s_segmentsSeen;
 		static ld::Section		_s_DATA_data;
 		static ld::Section		_s_DATA_const;
@@ -176,7 +180,7 @@ private:
 	};
 	typedef std::unordered_map<const ld::Section*, FinalSection*, SectionHash, SectionEquals> SectionInToOut;
 	
-
+	
 	SectionInToOut			_sectionInToFinalMap;
 	const Options&			_options;
 	bool					_atomsOrderedInSections;
@@ -198,7 +202,7 @@ std::vector<const char*> InternalState::FinalSection::_s_segmentsSeen;
 
 size_t InternalState::SectionHash::operator()(const ld::Section* sect) const
 {
-	size_t hash = 0;	
+	size_t hash = 0;
 	ld::CStringHash temp;
 	hash += temp.operator()(sect->segmentName());
 	hash += temp.operator()(sect->sectionName());
@@ -212,9 +216,9 @@ bool InternalState::SectionEquals::operator()(const ld::Section* left, const ld:
 
 
 InternalState::FinalSection::FinalSection(const ld::Section& sect, uint32_t sectionsSeen, const Options& opts)
-	: ld::Internal::FinalSection(sect), 
-	  _segmentOrder(segmentOrder(sect, opts)),
-	  _sectionOrder(sectionOrder(sect, sectionsSeen, opts))
+: ld::Internal::FinalSection(sect),
+_segmentOrder(segmentOrder(sect, opts)),
+_sectionOrder(sectionOrder(sect, sectionsSeen, opts))
 {
 	//fprintf(stderr, "FinalSection(%16s, %16s) _segmentOrder=%3d, _sectionOrder=0x%08X\n",
 	//		this->segmentName(), this->sectionName(), _segmentOrder, _sectionOrder);
@@ -269,7 +273,7 @@ const ld::Section& InternalState::FinalSection::outputSection(const ld::Section&
 			}
 			else if ( strcmp(sect.segmentName(), "__IMPORT") == 0 ) {
 				if ( strcmp(sect.sectionName(), "__pointers") == 0 )
-					return _s_DATA_nl_symbol_ptr; 
+					return _s_DATA_nl_symbol_ptr;
 			}
 			break;
 		case ld::Section::typeTentativeDefs:
@@ -280,7 +284,7 @@ const ld::Section& InternalState::FinalSection::outputSection(const ld::Section&
 					return _s_DATA_common;
 			}
 			break;
-			// FIX ME: more 
+			// FIX ME: more
 		default:
 			break;
 	}
@@ -298,16 +302,16 @@ const ld::Section& InternalState::FinalSection::objectOutputSection(const ld::Se
 uint32_t InternalState::FinalSection::segmentOrder(const ld::Section& sect, const Options& options)
 {
 	if ( options.outputKind() == Options::kPreload ) {
-		if ( strcmp(sect.segmentName(), "__HEADER") == 0 ) 
+		if ( strcmp(sect.segmentName(), "__HEADER") == 0 )
 			return 0;
 		const std::vector<const char*>& order = options.segmentOrder();
 		for (size_t i=0; i != order.size(); ++i) {
-			if ( strcmp(sect.segmentName(), order[i]) == 0 ) 
+			if ( strcmp(sect.segmentName(), order[i]) == 0 )
 				return i+1;
 		}
-		if ( strcmp(sect.segmentName(), "__TEXT") == 0 ) 
+		if ( strcmp(sect.segmentName(), "__TEXT") == 0 )
 			return order.size()+1;
-		if ( strcmp(sect.segmentName(), "__DATA") == 0 ) 
+		if ( strcmp(sect.segmentName(), "__DATA") == 0 )
 			return order.size()+2;
 	}
 	else if ( options.outputKind() == Options::kStaticExecutable ) {
@@ -325,9 +329,9 @@ uint32_t InternalState::FinalSection::segmentOrder(const ld::Section& sect, cons
 	}
 	else {
 		bool armCloseStubs = (options.architecture() == CPU_TYPE_ARM) && !options.sharedRegionEligible() && !options.makeEncryptable() && !options.makeChainedFixups();
-		if ( strcmp(sect.segmentName(), "__PAGEZERO") == 0 ) 
+		if ( strcmp(sect.segmentName(), "__PAGEZERO") == 0 )
 			return 0;
-		if ( strcmp(sect.segmentName(), "__TEXT") == 0 ) 
+		if ( strcmp(sect.segmentName(), "__TEXT") == 0 )
 			return 1;
 		if ( strcmp(sect.segmentName(), "__TEXT_EXEC") == 0 )
 			return 2;
@@ -336,7 +340,7 @@ uint32_t InternalState::FinalSection::segmentOrder(const ld::Section& sect, cons
 		// in -r mode, want __DATA  last so zerofill sections are at end
 		if ( strcmp(sect.segmentName(), "__DATA") == 0 )
 			return (options.outputKind() == Options::kObjectFile) ? 7 : 4;
-		if ( strcmp(sect.segmentName(), "__OBJC") == 0 ) 
+		if ( strcmp(sect.segmentName(), "__OBJC") == 0 )
 			return 5;
 		if ( strcmp(sect.segmentName(), "__IMPORT") == 0 )
 			return 6;
@@ -359,10 +363,10 @@ uint32_t InternalState::FinalSection::sectionOrder(const ld::Section& sect, uint
 	if ( sect.type() == ld::Section::typeLastSection )
 		return INT_MAX;
 	const std::vector<const char*>* sectionList = options.sectionOrder(sect.segmentName());
-	if ( ((options.outputKind() == Options::kPreload) || (options.outputKind() == Options::kDyld)) && (sectionList != NULL) ) {
+	if ( ((options.outputKind() == Options::kPreload) || (options.outputKind() == Options::kDyld) || options.isKernel()) && (sectionList != NULL) ) {
 		uint32_t count = 10;
 		for (std::vector<const char*>::const_iterator it=sectionList->begin(); it != sectionList->end(); ++it, ++count) {
-			if ( strcmp(*it, sect.sectionName()) == 0 ) 
+			if ( strcmp(*it, sect.sectionName()) == 0 )
 				return count;
 		}
 	}
@@ -403,6 +407,8 @@ uint32_t InternalState::FinalSection::sectionOrder(const ld::Section& sect, uint
 				}
 				return sectionsSeen+20;
 			default:
+				if ( (strcmp(sect.sectionName(), "__objc_methlist") == 0) )
+					return 15;
 				return sectionsSeen+20;
 		}
 	}
@@ -440,39 +446,47 @@ uint32_t InternalState::FinalSection::sectionOrder(const ld::Section& sect, uint
 				if ( strcmp(sect.sectionName(), "__cfstring") == 0 )
 					return 15;
 				// <rdar://problem/7435296> Reorder sections to reduce page faults in object files
-				else if ( strcmp(sect.sectionName(), "__objc_classlist") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_classlist") == 0 )
 					return 20;
-				else if ( strcmp(sect.sectionName(), "__objc_nlclslist") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_nlclslist") == 0 )
 					return 21;
-				else if ( strcmp(sect.sectionName(), "__objc_catlist") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_catlist") == 0 )
 					return 22;
-				else if ( strcmp(sect.sectionName(), "__objc_nlcatlist") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_nlcatlist") == 0 )
 					return 23;
-				else if ( strcmp(sect.sectionName(), "__objc_protolist") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_protolist") == 0 )
 					return 24;
-				else if ( strcmp(sect.sectionName(), "__objc_imageinfo") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_imageinfo") == 0 )
 					return 25;
-				else if ( strcmp(sect.sectionName(), "__objc_const") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_const") == 0 )
 					return 26;
-				else if ( strcmp(sect.sectionName(), "__objc_selrefs") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_selrefs") == 0 )
 					return 27;
-				else if ( strcmp(sect.sectionName(), "__objc_msgrefs") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_msgrefs") == 0 )
 					return 28;
-				else if ( strcmp(sect.sectionName(), "__objc_protorefs") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_protorefs") == 0 )
 					return 29;
-				else if ( strcmp(sect.sectionName(), "__objc_classrefs") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_classrefs") == 0 )
 					return 30;
-				else if ( strcmp(sect.sectionName(), "__objc_superrefs") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_superrefs") == 0 )
 					return 31;
-				else if ( strcmp(sect.sectionName(), "__objc_ivar") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_ivar") == 0 )
 					return 32;
-				else if ( strcmp(sect.sectionName(), "__objc_data") == 0 ) 
+				else if ( strcmp(sect.sectionName(), "__objc_data") == 0 )
 					return 33;
 				else if ( strcmp(sect.sectionName(), "__objc_const_ax") == 0 )
 					return 34;
 				else
 					return sectionsSeen+40;
 		}
+	}
+	else if ( strcmp(sect.segmentName(), "__OBJC_CONST") == 0 ) {
+		// First emit the sections we want the shared cache builder to keep in order
+		if ( strcmp(sect.sectionName(), "__objc_class_ro") == 0 )
+			return 10;
+		if ( strcmp(sect.sectionName(), "__cfstring") == 0 )
+			return 11;
+		return sectionsSeen+10;
 	}
 	// make sure zerofill in any other section is at end of segment
 	if ( sect.type() == ld::Section::typeZeroFill )
@@ -595,30 +609,40 @@ bool InternalState::hasReferenceToWeakExternal(const ld::Atom& atom)
 	return false;
 }
 
-bool InternalState::inMoveRWChain(const ld::Atom& atom, const char* filePath, const char*& dstSeg, bool& wildCardMatch)
+
+// .o files without .subsections_via_symbols have all atoms in a section chained together with kindNoneFollowOn
+// If any symbol in section is moved to another segment/section, all the atoms in that section need to be moved too.
+// But we don't have a good way to find the start atom, so we just move all atoms started with the choosen one.
+//
+// For Swift classes, there are two alt_entry symbols in the class structure. If the main symbol or either alt_entry
+// is moved, then all the atoms in that chain need to move. We find the start atom via the kindNoneGroupSubordinate.
+bool InternalState::inMoveRWChain(const ld::Atom& atom, const char* filePath, bool followedBackBranch, const char*& dstSeg, bool& wildCardMatch)
 {
 	if ( !_options.hasDataSymbolMoves() )
 		return false;
-
+	
 	auto pos = _pendingSegMove.find(&atom);
 	if ( pos != _pendingSegMove.end() ) {
 		dstSeg = pos->second;
 		return true;
 	}
-
+	
 	bool result = false;
-	if ( _options.moveRwSymbol(atom.name(), filePath, dstSeg, wildCardMatch) )
+	if ( _options.moveRwSymbol(atom.getUserVisibleName(), filePath, dstSeg, wildCardMatch) )
 		result = true;
-
+	
 	for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
-		if ( fit->kind == ld::Fixup::kindNoneFollowOn ) {
-			if ( fit->binding == ld::Fixup::bindingDirectlyBound ) {
-				if ( inMoveRWChain(*(fit->u.target), filePath, dstSeg, wildCardMatch) )
-					result = true;
-			}
+		if ( (fit->kind == ld::Fixup::kindNoneFollowOn) && (fit->binding == ld::Fixup::bindingDirectlyBound) ) {
+			if ( inMoveRWChain(*(fit->u.target), filePath, followedBackBranch, dstSeg, wildCardMatch) )
+				result = true;
+		}
+		else if ( !followedBackBranch && (fit->kind == ld::Fixup::kindNoneGroupSubordinate) && (fit->binding == ld::Fixup::bindingDirectlyBound) ) {
+			// don't recurse forever.  Only recurse if we have not already followed a backbranch (kindNoneGroupSubordinate)
+			if ( inMoveRWChain(*(fit->u.target), filePath, true, dstSeg, wildCardMatch) )
+				result = true;
 		}
 	}
-
+	
 	if ( result ) {
 		for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
 			if ( fit->kind == ld::Fixup::kindNoneFollowOn ) {
@@ -628,7 +652,7 @@ bool InternalState::inMoveRWChain(const ld::Atom& atom, const char* filePath, co
 			}
 		}
 	}
-
+	
 	return result;
 }
 
@@ -637,17 +661,17 @@ bool InternalState::inMoveROChain(const ld::Atom& atom, const char* filePath, co
 {
 	if ( !_options.hasCodeSymbolMoves() )
 		return false;
-
+	
 	auto pos = _pendingSegMove.find(&atom);
 	if ( pos != _pendingSegMove.end() ) {
 		dstSeg = pos->second;
 		return true;
 	}
-
+	
 	bool result = false;
-	if ( _options.moveRoSymbol(atom.name(), filePath, dstSeg, wildCardMatch) )
+	if ( _options.moveRoSymbol(atom.getUserVisibleName(), filePath, dstSeg, wildCardMatch) )
 		result = true;
-
+	
 	for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
 		if ( fit->kind == ld::Fixup::kindNoneFollowOn ) {
 			if ( fit->binding == ld::Fixup::bindingDirectlyBound ) {
@@ -656,7 +680,7 @@ bool InternalState::inMoveROChain(const ld::Atom& atom, const char* filePath, co
 			}
 		}
 	}
-
+	
 	if ( result ) {
 		for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
 			if ( fit->kind == ld::Fixup::kindNoneFollowOn ) {
@@ -666,9 +690,70 @@ bool InternalState::inMoveROChain(const ld::Atom& atom, const char* filePath, co
 			}
 		}
 	}
-
+	
 	return result;
 }
+
+
+// .o files without .subsections_via_symbols have all atoms in a section chained together with kindNoneFollowOn
+// If any symbol in section is moved to another segment/section, all the atoms in that section need to be moved too.
+// But we don't have a good way to find the start atom, so we just move all atoms started with the choosen one.
+//
+// For Swift classes, there are two alt_entry symbols in the class structure. If the main symbol or either alt_entry
+// is moved, then all the atoms in that chain need to move. We find the start atom via the kindNoneGroupSubordinate.
+#if SUPPORT_ARCH_arm64e
+bool InternalState::inMoveAuthChain(const ld::Atom& atom, bool followedBackBranch, const char*& dstSeg)
+{
+	if ( !_options.useAuthDataSegment() )
+		return false;
+	
+	auto pos = _pendingSegMove.find(&atom);
+	if ( pos != _pendingSegMove.end() ) {
+		dstSeg = pos->second;
+		return true;
+	}
+	
+	auto hasAuthenticatedFixups = [](const ld::Atom& atom) -> bool {
+		for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
+			switch (fit->kind) {
+				case ld::Fixup::kindStoreLittleEndianAuth64:
+				case ld::Fixup::kindStoreTargetAddressLittleEndianAuth64:
+				case ld::Fixup::kindSetAuthData:
+					return true;
+				default:
+					break;
+			}
+		}
+		return false;
+	};
+	
+	bool result = hasAuthenticatedFixups(atom);
+	
+	for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
+		if ( (fit->kind == ld::Fixup::kindNoneFollowOn) && (fit->binding == ld::Fixup::bindingDirectlyBound) ) {
+			if ( inMoveAuthChain(*(fit->u.target), followedBackBranch, dstSeg) )
+				result = true;
+		}
+		else if ( !followedBackBranch && (fit->kind == ld::Fixup::kindNoneGroupSubordinate) && (fit->binding == ld::Fixup::bindingDirectlyBound) ) {
+			// don't recurse forever.  Only recurse if we have not already followed a backbranch (kindNoneGroupSubordinate)
+			if ( inMoveAuthChain(*(fit->u.target), true, dstSeg) )
+				result = true;
+		}
+	}
+	
+	if ( result ) {
+		for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
+			if ( fit->kind == ld::Fixup::kindNoneFollowOn ) {
+				if ( fit->binding == ld::Fixup::bindingDirectlyBound ) {
+					_pendingSegMove[fit->u.target] = dstSeg;
+				}
+			}
+		}
+	}
+	
+	return result;
+}
+#endif
 
 
 
@@ -683,23 +768,24 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 	const ld::File* f = atom.file();
 	const char* path = (f != NULL) ? f->path() : NULL;
 	if ( atom.section().type() == ld::Section::typeTentativeDefs ) {
-		// tentative defintions don't have a real section name yet
+		// tentative definitions don't have a real section name yet
 		sectType = ld::Section::typeZeroFill;
 		if ( _options.mergeZeroFill() )
 			curSectName = FinalSection::_s_DATA_zerofill.sectionName();
 		else
 			curSectName = FinalSection::_s_DATA_common.sectionName();
 	}
+	
 	// Support for -move_to_r._segment
 	if ( atom.symbolTableInclusion() == ld::Atom::symbolTableIn ) {
 		const char* dstSeg;
 		bool wildCardMatch;
-		if ( inMoveRWChain(atom, path, dstSeg, wildCardMatch) ) {
-			if ( (sectType != ld::Section::typeZeroFill) 
-			  && (sectType != ld::Section::typeUnclassified) 
-			  && (sectType != ld::Section::typeTentativeDefs)
-			  && (sectType != ld::Section::typeTLVDefs)
-			  && (sectType != ld::Section::typeDyldInfo) ) {
+		if ( inMoveRWChain(atom, path, false, dstSeg, wildCardMatch) ) {
+			if ( (sectType != ld::Section::typeZeroFill)
+				&& (sectType != ld::Section::typeUnclassified)
+				&& (sectType != ld::Section::typeTentativeDefs)
+				&& (sectType != ld::Section::typeTLVDefs)
+				&& (sectType != ld::Section::typeDyldInfo) ) {
 				if ( !wildCardMatch )
 					warning("cannot move symbol '%s' from file %s to segment '%s' because symbol is not data (is %d)", atom.name(), path, dstSeg, sectType);
 			}
@@ -710,9 +796,43 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 				fs = this->getFinalSection(curSegName, curSectName, sectType);
 			}
 		}
+		else {
+			const char* symName = atom.name();
+			if ( strncmp(symName, "__OBJC_$_INSTANCE_METHODS_", 26) == 0 ) {
+				if ( _options.moveAXMethodList(&symName[26]) ) {
+					curSectName  = "__objc_const_ax";
+					fs = this->getFinalSection(curSegName, curSectName, sectType);
+					if ( _options.traceSymbolLayout() )
+						printf("symbol '%s', .axsymbol mapped it to %s/%s\n", atom.name(), curSegName, curSectName);
+				}
+			}
+			else if ( strncmp(symName, "__OBJC_$_CLASS_METHODS_", 23) == 0 ) {
+				if ( _options.moveAXMethodList(&symName[23]) ) {
+					curSectName  = "__objc_const_ax";
+					fs = this->getFinalSection(curSegName, curSectName, sectType);
+					if ( _options.traceSymbolLayout() )
+						printf("symbol '%s', .axsymbol mapped it to %s/%s\n", atom.name(), curSegName, curSectName);
+				}
+			}
+#if SUPPORT_ARCH_arm64e
+			else if ( (strncmp(symName, "__OBJC_CLASS_RO_", 16) == 0) || (strncmp(symName, "__OBJC_METACLASS_RO_", 20) == 0) ) {
+				// The shared cache knows how to strip authenticated pointers from these atoms.
+				// Move them to __OBJC_CONST to make it easier to optimize them.
+				// Note the magic 72 here is the size of an objc class_ro_t.
+				// Swift has a larger class_ro_t which we don't know if we can optimize
+				if ( (atom.size() == 72) && _options.supportsAuthenticatedPointers() && _options.sharedRegionEligible() ) {
+					curSegName = "__OBJC_CONST";
+					curSectName  = "__objc_class_ro";
+					fs = this->getFinalSection(curSegName, curSectName, sectType);
+					if ( _options.traceSymbolLayout() )
+						printf("symbol '%s', class_ro_t mapped it to %s/%s\n", atom.name(), curSegName, curSectName);
+				}
+			}
+#endif
+		}
 		if ( (fs == NULL) && inMoveROChain(atom, path, dstSeg, wildCardMatch) ) {
 			if ( (sectType != ld::Section::typeCode)
-			  && (sectType != ld::Section::typeUnclassified) ) {
+				&& (sectType != ld::Section::typeUnclassified) ) {
 				if ( !wildCardMatch )
 					warning("cannot move symbol '%s' from file %s to segment '%s' because symbol is not code (is %d)", atom.name(), path, dstSeg, sectType);
 			}
@@ -743,28 +863,59 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 			}
 		}
 	}
-
+	
 	// support for -rename_section and -rename_segment
 	for (const Options::SectionRename& rename : _options.sectionRenames()) {
 		if ( (strcmp(curSectName, rename.fromSection) == 0) && (strcmp(curSegName, rename.fromSegment) == 0) ) {
 			if ( _options.useDataConstSegment() && _options.sharedRegionEligible() && (strcmp(curSectName, "__const") == 0) && (strcmp(curSegName, "__DATA") == 0) && hasReferenceToWeakExternal(atom) ) {
 				// if __DATA,__const atom has pointer to weak external symbol, don't move to __DATA_CONST
 				curSectName = "__const_weak";
+				
+#if SUPPORT_ARCH_arm64e
+				// We may want __AUTH, but double check there isn't a chain already
+				// for this atom which will force it in a different segment
+				curSegName = "__AUTH";
+				if ( !inMoveAuthChain(atom, false, curSegName) )
+					curSegName = "__DATA";
+#endif
+				
 				fs = this->getFinalSection(curSegName, curSectName, sectType);
 				if ( _options.traceSymbolLayout() )
-					printf("symbol '%s', contains pointers to weak symbols, so mapped it to __DATA/__const_weak\n", atom.name());
+					printf("symbol '%s', contains pointers to weak symbols, so mapped it to %s/__const_weak\n", atom.name(), curSegName);
 			}
 			else if ( _options.useDataConstSegment() && _options.sharedRegionEligible() && (sectType == ld::Section::typeNonLazyPointer) && hasReferenceToWeakExternal(atom) ) {
 				// if __DATA,__nl_symbol_ptr atom has pointer to weak external symbol, don't move to __DATA_CONST
 				curSectName = "__got_weak";
-				fs = this->getFinalSection("__DATA", curSectName, sectType);
+				
+				curSegName = "__DATA";
+#if SUPPORT_ARCH_arm64e
+				// We may want __AUTH, but double check there isn't a chain already
+				// for this atom which will force it in a different segment
+				curSegName = "__AUTH";
+				if ( !inMoveAuthChain(atom, false, curSegName) )
+					curSegName = "__DATA";
+#endif
+				
+				fs = this->getFinalSection(curSegName, curSectName, sectType);
 				if ( _options.traceSymbolLayout() )
-					printf("symbol '%s', contains pointers to weak symbols, so mapped it to __DATA/__got_weak\n", atom.name());
+					printf("symbol '%s', contains pointers to weak symbols, so mapped it to %s/__got_weak\n", atom.name(), curSegName);
 			}
 			else {
 				curSegName = rename.toSegment;
 				curSectName = rename.toSection;
-				fs = this->getFinalSection(rename.toSegment, rename.toSection, sectType);
+				
+#if SUPPORT_ARCH_arm64e
+				// Actually move to __AUTH_CONST if we are const and authenticated
+				if ( !strcmp(curSegName, "__DATA_CONST") ) {
+					// We may want __AUTH_CONST, but double check there isn't a chain already
+					// for this atom which will force it in a different segment
+					curSegName = "__AUTH_CONST";
+					if ( !inMoveAuthChain(atom, false, curSegName) )
+						curSegName = "__DATA_CONST";
+				}
+#endif
+				
+				fs = this->getFinalSection(curSegName, rename.toSection, sectType);
 				if ( _options.traceSymbolLayout() )
 					printf("symbol '%s', -rename_section mapped it to %s/%s\n", atom.name(), fs->segmentName(), fs->sectionName());
 			}
@@ -777,14 +928,30 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 			fs = this->getFinalSection(rename.toSegment, curSectName, sectType);
 		}
 	}
-
+	
+#if SUPPORT_ARCH_arm64e
+	if ( fs == NULL ) {
+		// Actually move to __AUTH if we are authenticated
+		if ( !strcmp(curSegName, "__DATA") ) {
+			// We may want __AUTH, but double check there isn't a chain already
+			// for this atom which will force it in a different segment
+			curSegName = "__AUTH";
+			if ( inMoveAuthChain(atom, false, curSegName) ) {
+				fs = this->getFinalSection(curSegName, curSectName, sectType);
+				if ( _options.traceSymbolLayout() && (atom.symbolTableInclusion() == ld::Atom::symbolTableIn) )
+					printf("symbol '%s', contains authenticated pointers, so mapped it to __AUTH/%s\n", atom.name(), fs->sectionName());
+			}
+		}
+	}
+#endif
+	
 	// if no override, use default location
 	if ( fs == NULL ) {
 		fs = this->getFinalSection(atom.section());
 		if ( _options.traceSymbolLayout() && (atom.symbolTableInclusion() == ld::Atom::symbolTableIn) )
 			printf("symbol '%s', use default mapping to %s/%s\n", atom.name(), fs->segmentName(), fs->sectionName());
 	}
-
+	
 	//fprintf(stderr, "InternalState::doAtom(%p), name=%s, sect=%s, finalseg=%s\n", &atom, atom.name(), atom.section().sectionName(), fs->segmentName());
 #ifndef NDEBUG
 	validateFixups(atom);
@@ -814,7 +981,7 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 
 
 ld::Internal::FinalSection* InternalState::getFinalSection(const char* seg, const char* sect, ld::Section::Type type)
-{	
+{
 	for (std::vector<ld::Internal::FinalSection*>::iterator it=sections.begin(); it != sections.end(); ++it) {
 		if ( (strcmp((*it)->segmentName(),seg) == 0) && (strcmp((*it)->sectionName(),sect) == 0) )
 			return *it;
@@ -823,7 +990,7 @@ ld::Internal::FinalSection* InternalState::getFinalSection(const char* seg, cons
 }
 
 ld::Internal::FinalSection* InternalState::getFinalSection(const ld::Section& inputSection)
-{	
+{
 	const ld::Section* baseForFinalSection = &inputSection;
 	
 	// see if input section already has a FinalSection
@@ -831,7 +998,7 @@ ld::Internal::FinalSection* InternalState::getFinalSection(const ld::Section& in
 	if ( pos != _sectionInToFinalMap.end() ) {
 		return pos->second;
 	}
-
+	
 	// otherwise, create a new final section
 	switch ( _options.outputKind() ) {
 		case Options::kStaticExecutable:
@@ -841,20 +1008,31 @@ ld::Internal::FinalSection* InternalState::getFinalSection(const ld::Section& in
 		case Options::kDyld:
 		case Options::kKextBundle:
 		case Options::kPreload:
-			{
-				// coalesce some sections
-				const ld::Section& outSect = FinalSection::outputSection(inputSection, _options.mergeZeroFill());
-				pos = _sectionInToFinalMap.find(&outSect);
-				if ( pos != _sectionInToFinalMap.end() ) {
-					_sectionInToFinalMap[&inputSection] = pos->second;
-					//fprintf(stderr, "_sectionInToFinalMap[%p] = %p\n", &inputSection, pos->second);
-					return pos->second;
+		{
+			// coalesce some sections
+			const ld::Section& outSect = FinalSection::outputSection(inputSection, _options.mergeZeroFill());
+			if ( _options.mergeZeroFill() && (inputSection.type() == ld::Section::typeZeroFill) && (strcmp(inputSection.segmentName(), "__DATA") != 0) ) {
+				// have custom segment with zero-fill, so need custom section, see if we already have one
+				for (const auto& entry : _sectionInToFinalMap) {
+					ld::Internal::FinalSection* anOut = entry.second;
+					if ( (strcmp(anOut->segmentName(), inputSection.segmentName()) == 0) && (strcmp(anOut->sectionName(), "__zerofill") == 0) )
+						return anOut;
 				}
-				else if ( outSect != inputSection ) {
-					// new output section created, but not in map
-					baseForFinalSection = &outSect;
-				}
+				// need to create custom section
+				baseForFinalSection = new ld::Section(inputSection.segmentName(), "__zerofill", ld::Section::typeZeroFill);
+				break;
 			}
+			pos = _sectionInToFinalMap.find(&outSect);
+			if ( pos != _sectionInToFinalMap.end() ) {
+				_sectionInToFinalMap[&inputSection] = pos->second;
+				//fprintf(stderr, "_sectionInToFinalMap[%p] = %p\n", &inputSection, pos->second);
+				return pos->second;
+			}
+			else if ( outSect != inputSection ) {
+				// new output section created, but not in map
+				baseForFinalSection = &outSect;
+			}
+		}
 			break;
 		case Options::kObjectFile:
 			baseForFinalSection = &FinalSection::objectOutputSection(inputSection, _options);
@@ -866,9 +1044,9 @@ ld::Internal::FinalSection* InternalState::getFinalSection(const ld::Section& in
 			}
 			break;
 	}
-
-	InternalState::FinalSection* result = new InternalState::FinalSection(*baseForFinalSection, 
-																	_sectionInToFinalMap.size(), _options);
+	
+	InternalState::FinalSection* result = new InternalState::FinalSection(*baseForFinalSection,
+																		  _sectionInToFinalMap.size(), _options);
 	_sectionInToFinalMap[baseForFinalSection] = result;
 	//fprintf(stderr, "_sectionInToFinalMap[%p(%s)] = %p\n", baseForFinalSection, baseForFinalSection->sectionName(), result);
 	sections.push_back(result);
@@ -893,10 +1071,10 @@ void InternalState::sortSections()
 	//for (std::vector<ld::Internal::FinalSection*>::iterator it = sections.begin(); it != sections.end(); ++it) {
 	//	fprintf(stderr, "final section %p %s/%s\n", (*it), (*it)->segmentName(), (*it)->sectionName());
 	//}
-	assert((sections[0]->type() == ld::Section::typeMachHeader) 
-		|| ((sections[0]->type() == ld::Section::typeFirstSection) && (sections[1]->type() == ld::Section::typeMachHeader))
-		|| ((sections[0]->type() == ld::Section::typePageZero) && (sections[1]->type() == ld::Section::typeMachHeader))
-		|| ((sections[0]->type() == ld::Section::typePageZero) && (sections[1]->type() == ld::Section::typeFirstSection) && (sections[2]->type() == ld::Section::typeMachHeader)) );
+	assert((sections[0]->type() == ld::Section::typeMachHeader)
+		   || ((sections[0]->type() == ld::Section::typeFirstSection) && (sections[1]->type() == ld::Section::typeMachHeader))
+		   || ((sections[0]->type() == ld::Section::typePageZero) && (sections[1]->type() == ld::Section::typeMachHeader))
+		   || ((sections[0]->type() == ld::Section::typePageZero) && (sections[1]->type() == ld::Section::typeFirstSection) && (sections[2]->type() == ld::Section::typeMachHeader)) );
 	
 }
 
@@ -920,12 +1098,12 @@ bool InternalState::hasZeroForFileOffset(const ld::Section* sect)
 uint64_t InternalState::pageAlign(uint64_t addr)
 {
 	const uint64_t alignment = _options.segmentAlignment();
-	return ((addr+alignment-1) & (-alignment)); 
+	return ((addr+alignment-1) & (-alignment));
 }
 
 uint64_t InternalState::pageAlign(uint64_t addr, uint64_t pageSize)
 {
-	return ((addr+pageSize-1) & (-pageSize)); 
+	return ((addr+pageSize-1) & (-pageSize));
 }
 
 void InternalState::setSectionSizesAndAlignments()
@@ -958,7 +1136,7 @@ void InternalState::setSectionSizesAndAlignments()
 						case ld::Section::typeUnclassified:
 						case ld::Section::typeTentativeDefs:
 						case ld::Section::typeZeroFill:
-							if ( contiguousObjCSection ) 
+							if ( contiguousObjCSection )
 								break;
 							pagePerAtom = true;
 							if ( atomAlignmentPowerOf2 < 12 ) {
@@ -990,24 +1168,29 @@ void InternalState::setSectionSizesAndAlignments()
 						offset = (offset + 4095) & (-4096); // round up to end of page
 					}
 				}
-				if ( (atom->scope() == ld::Atom::scopeGlobal) 
-					&& (atom->definition() == ld::Atom::definitionRegular) 
-					&& (atom->combine() == ld::Atom::combineByName) 
-					&& ((atom->symbolTableInclusion() == ld::Atom::symbolTableIn) 
-					 || (atom->symbolTableInclusion() == ld::Atom::symbolTableInAndNeverStrip)) ) {
-						this->hasWeakExternalSymbols = true;
-						if ( _options.warnWeakExports()	) 
-							warning("weak external symbol: %s", atom->name());
-						else if ( _options.noWeakExports()	)
-							throwf("weak external symbol: %s", atom->name());
+				if ( (atom->scope() == ld::Atom::scopeGlobal)
+					&& (atom->definition() == ld::Atom::definitionRegular)
+					&& (atom->combine() == ld::Atom::combineByName)
+					&& ((atom->symbolTableInclusion() == ld::Atom::symbolTableIn)
+						|| (atom->symbolTableInclusion() == ld::Atom::symbolTableInAndNeverStrip)) ) {
+					this->hasWeakExternalSymbols = true;
+					if ( _options.warnWeakExports()	)
+						warning("weak external symbol: %s", atom->name());
+					else if ( _options.noWeakExports()	)
+						throwf("weak external symbol: %s", atom->name());
 				}
 			}
 			sect->size = offset;
 			// section alignment is that of a contained atom with the greatest alignment
 			sect->alignment = maxAlignment;
 			// unless -sectalign command line option overrides
-			if  ( _options.hasCustomSectionAlignment(sect->segmentName(), sect->sectionName()) )
+			if  ( _options.hasCustomSectionAlignment(sect->segmentName(), sect->sectionName()) ) {
 				sect->alignment = _options.customSectionAlignment(sect->segmentName(), sect->sectionName());
+				if ( maxAlignment > sect->alignment ) {
+					warning("-sectalign is reducing the alignment of %s,%s from 2^%u to 2^%u",
+							sect->segmentName(), sect->sectionName(), maxAlignment, sect->alignment);
+				}
+			}
 			// each atom in __eh_frame has zero alignment to assure they pack together,
 			// but compilers usually make the CFIs pointer sized, so we want whole section
 			// to start on pointer sized boundary.
@@ -1017,7 +1200,7 @@ void InternalState::setSectionSizesAndAlignments()
 				this->hasThreadLocalVariableDefinitions = true;
 		}
 	}
-
+	
 	// <rdar://problem/24221680> All __thread_data and __thread_bss sections must have same alignment
 	uint8_t maxThreadAlign = 0;
 	for (ld::Internal::FinalSection* sect : sections) {
@@ -1031,16 +1214,16 @@ void InternalState::setSectionSizesAndAlignments()
 			sect->alignment = maxThreadAlign;
 		}
 	}
-
+	
 }
 
-uint64_t InternalState::assignFileOffsets() 
+uint64_t InternalState::assignFileOffsets()
 {
-  	const bool log = false;
+	const bool log = false;
 	const bool hiddenSectionsOccupyAddressSpace = ((_options.outputKind() != Options::kObjectFile)
-												&& (_options.outputKind() != Options::kPreload));
+												   && (_options.outputKind() != Options::kPreload));
 	const bool segmentsArePageAligned = (_options.outputKind() != Options::kObjectFile);
-
+	
 	uint64_t address = 0;
 	const char* lastSegName = "";
 	uint64_t floatingAddressStart = _options.baseAddress();
@@ -1052,12 +1235,12 @@ uint64_t InternalState::assignFileOffsets()
 		sect->alignmentPaddingBytes = 0;
 		sect->address = ULLONG_MAX;
 	}
-
+	
 	// first pass, assign addresses to sections in segments with fixed start addresses
 	if ( log ) fprintf(stderr, "Fixed address segments:\n");
 	for (std::vector<ld::Internal::FinalSection*>::iterator it = sections.begin(); it != sections.end(); ++it) {
 		ld::Internal::FinalSection* sect = *it;
-		if ( ! _options.hasCustomSegmentAddress(sect->segmentName()) ) 
+		if ( ! _options.hasCustomSegmentAddress(sect->segmentName()) )
 			continue;
 		haveFixedSegments = true;
 		if ( segmentsArePageAligned ) {
@@ -1070,19 +1253,19 @@ uint64_t InternalState::assignFileOffsets()
 		uint64_t unalignedAddress = address;
 		uint64_t alignment = (1 << sect->alignment);
 		address = ( (unalignedAddress+alignment-1) & (-alignment) );
-	
+		
 		// update section info
 		sect->address = address;
 		sect->alignmentPaddingBytes = (address - unalignedAddress);
 		
 		// sanity check size
-		if ( ((address + sect->size) > _options.maxAddress()) && (_options.outputKind() != Options::kObjectFile) 
-															  && (_options.outputKind() != Options::kStaticExecutable) )
-			throwf("section %s (address=0x%08llX, size=%llu) would make the output executable exceed available address range", 
-						sect->sectionName(), address, sect->size);
+		if ( ((address + sect->size) > _options.maxAddress()) && (_options.outputKind() != Options::kObjectFile)
+			&& (_options.outputKind() != Options::kStaticExecutable) )
+			throwf("section %s (address=0x%08llX, size=%llu) would make the output executable exceed available address range",
+				   sect->sectionName(), address, sect->size);
 		
 		if ( log ) fprintf(stderr, "  address=0x%08llX, hidden=%d, alignment=%02d, section=%s,%s\n",
-						sect->address, sect->isSectionHidden(), sect->alignment, sect->segmentName(), sect->sectionName());
+						   sect->address, sect->isSectionHidden(), sect->alignment, sect->segmentName(), sect->sectionName());
 		// update running totals
 		if ( !sect->isSectionHidden() || hiddenSectionsOccupyAddressSpace )
 			address += sect->size;
@@ -1092,12 +1275,12 @@ uint64_t InternalState::assignFileOffsets()
 			floatingAddressStart = address;
 		}
 	}
-
+	
 	// second pass, assign section addresses to sections in segments that are ordered after a segment with a fixed address
 	if ( haveFixedSegments && !_options.segmentOrder().empty() ) {
 		if ( log ) fprintf(stderr, "After Fixed address segments:\n");
 		lastSegName = "";
-		ld::Internal::FinalSection* lastSect = NULL; 
+		ld::Internal::FinalSection* lastSect = NULL;
 		for (std::vector<ld::Internal::FinalSection*>::iterator it = sections.begin(); it != sections.end(); ++it) {
 			ld::Internal::FinalSection* sect = *it;
 			if ( (sect->address == ULLONG_MAX) && _options.segmentOrderAfterFixedAddressSegment(sect->segmentName()) ) {
@@ -1113,7 +1296,7 @@ uint64_t InternalState::assignFileOffsets()
 				sect->alignmentPaddingBytes = (address - unalignedAddress);
 				sect->address = address;
 				if ( log ) fprintf(stderr, "  address=0x%08llX, hidden=%d, alignment=%02d, section=%s,%s\n",
-									sect->address, sect->isSectionHidden(), sect->alignment, sect->segmentName(), sect->sectionName());
+								   sect->address, sect->isSectionHidden(), sect->alignment, sect->segmentName(), sect->sectionName());
 				// update running totals
 				if ( !sect->isSectionHidden() || hiddenSectionsOccupyAddressSpace )
 					address += sect->size;
@@ -1122,7 +1305,7 @@ uint64_t InternalState::assignFileOffsets()
 			lastSect = sect;
 		}
 	}
-
+	
 	// last pass, assign addresses to remaining sections
 	address = floatingAddressStart;
 	lastSegName = "";
@@ -1154,11 +1337,11 @@ uint64_t InternalState::assignFileOffsets()
 		uint64_t unalignedAddress = address;
 		uint64_t alignment = (1 << sect->alignment);
 		address = ( (unalignedAddress+alignment-1) & (-alignment) );
-	
+		
 		// update section info
 		sect->address = address;
 		sect->alignmentPaddingBytes = (address - unalignedAddress);
-
+		
 		// <rdar://problem/21994854> if first section is more aligned than segment, move segment start up to match
 		if ( (prevSect != NULL) && (prevSect->type() == ld::Section::typeFirstSection) && (strcmp(prevSect->segmentName(), sect->segmentName()) == 0) ) {
 			assert(prevSect->size == 0);
@@ -1167,17 +1350,17 @@ uint64_t InternalState::assignFileOffsets()
 				prevSect->address = sect->address;
 			}
 		}
-
+		
 		// sanity check size
-		if ( ((address + sect->size) > _options.maxAddress()) && (_options.outputKind() != Options::kObjectFile) 
-															  && (_options.outputKind() != Options::kStaticExecutable) )
-				throwf("section %s (address=0x%08llX, size=%llu) would make the output executable exceed available address range", 
-						sect->sectionName(), address, sect->size);
-
+		if ( ((address + sect->size) > _options.maxAddress()) && (_options.outputKind() != Options::kObjectFile)
+			&& (_options.outputKind() != Options::kStaticExecutable) )
+			throwf("section %s (address=0x%08llX, size=%llu) would make the output executable exceed available address range",
+				   sect->sectionName(), address, sect->size);
+		
 		// sanity check it does not overlap a fixed address segment
 		for (std::vector<ld::Internal::FinalSection*>::iterator sit = sections.begin(); sit != sections.end(); ++sit) {
 			ld::Internal::FinalSection* otherSect = *sit;
-			if ( ! _options.hasCustomSegmentAddress(otherSect->segmentName()) ) 
+			if ( ! _options.hasCustomSegmentAddress(otherSect->segmentName()) )
 				continue;
 			if ( otherSect->size == 0 )
 				continue;
@@ -1198,8 +1381,8 @@ uint64_t InternalState::assignFileOffsets()
 		}
 		
 		if ( log ) fprintf(stderr, "  address=0x%08llX, size=0x%08llX, hidden=%d, alignment=%02d, padBytes=%d, section=%s,%s\n",
-							sect->address, sect->size, sect->isSectionHidden(), sect->alignment, sect->alignmentPaddingBytes, 
-							sect->segmentName(), sect->sectionName());
+						   sect->address, sect->size, sect->isSectionHidden(), sect->alignment, sect->alignmentPaddingBytes,
+						   sect->segmentName(), sect->sectionName());
 		// update running totals
 		if ( !sect->isSectionHidden() || hiddenSectionsOccupyAddressSpace )
 			address += sect->size;
@@ -1212,17 +1395,17 @@ uint64_t InternalState::assignFileOffsets()
 			//if ( sect->isSectionHidden() )
 			//	continue;
 			fprintf(stderr, "  address:0x%08llX, alignment:2^%d, size:0x%08llX, padBytes:%d, section:%s/%s\n",
-							sect->address, sect->alignment, sect->size, sect->alignmentPaddingBytes, 
-							sect->segmentName(), sect->sectionName());
-	
+					sect->address, sect->alignment, sect->size, sect->alignmentPaddingBytes,
+					sect->segmentName(), sect->sectionName());
+			
 		}
-		throwf("Section (%s/%s) overlaps fixed address section (%s/%s)", 
-			overlappingFlowSection->segmentName(), overlappingFlowSection->sectionName(),
-			overlappingFixedSection->segmentName(), overlappingFixedSection->sectionName());
+		throwf("Section (%s/%s) overlaps fixed address section (%s/%s)",
+			   overlappingFlowSection->segmentName(), overlappingFlowSection->sectionName(),
+			   overlappingFixedSection->segmentName(), overlappingFixedSection->sectionName());
 	}
 	
 	
-	// third pass, assign section file offsets 
+	// third pass, assign section file offsets
 	uint64_t fileOffset = 0;
 	lastSegName = "";
 	if ( log ) fprintf(stderr, "All segments with file offsets:\n");
@@ -1231,7 +1414,7 @@ uint64_t InternalState::assignFileOffsets()
 		if ( hasZeroForFileOffset(sect) ) {
 			// fileoff of zerofill sections is moot, but historically it is set to zero
 			sect->fileOffset = 0;
-
+			
 			// <rdar://problem/10445047> align file offset with address layout
 			fileOffset += sect->alignmentPaddingBytes;
 		}
@@ -1241,7 +1424,7 @@ uint64_t InternalState::assignFileOffsets()
 				fileOffset = pageAlign(fileOffset, _options.segPageSize(lastSegName));
 			}
 			lastSegName = sect->segmentName();
-
+			
 			// align file offset with address layout
 			fileOffset += sect->alignmentPaddingBytes;
 			
@@ -1253,13 +1436,13 @@ uint64_t InternalState::assignFileOffsets()
 		}
 		
 		if ( log ) fprintf(stderr, "  fileoffset=0x%08llX, address=0x%08llX, hidden=%d, size=%lld, alignment=%02d, section=%s,%s\n",
-				sect->fileOffset, sect->address, sect->isSectionHidden(), sect->size, sect->alignment, 
-				sect->segmentName(), sect->sectionName());
+						   sect->fileOffset, sect->address, sect->isSectionHidden(), sect->size, sect->alignment,
+						   sect->segmentName(), sect->sectionName());
 	}
-
+	
 #if 0
 	// for encrypted iPhoneOS apps
-	if ( _options.makeEncryptable() ) { 
+	if ( _options.makeEncryptable() ) {
 		// remember end of __TEXT for later use by load command
 		for (std::vector<ld::Internal::FinalSection*>::iterator it = state.sections.begin(); it != state.sections.end(); ++it) {
 			ld::Internal::FinalSection* sect = *it;
@@ -1269,7 +1452,7 @@ uint64_t InternalState::assignFileOffsets()
 		}
 	}
 #endif
-
+	
 	// return total file size
 	return fileOffset;
 }
@@ -1296,8 +1479,8 @@ static void printTime(const char* msg, uint64_t partTime, uint64_t totalTime)
 	if ( sUnitsPerSecond == 0 ) {
 		struct mach_timebase_info timeBaseInfo;
 		if ( mach_timebase_info(&timeBaseInfo) != KERN_SUCCESS )
-      return;
-    sUnitsPerSecond = 1000000000ULL * timeBaseInfo.denom / timeBaseInfo.numer;
+			return;
+		sUnitsPerSecond = 1000000000ULL * timeBaseInfo.denom / timeBaseInfo.numer;
 	}
 	if ( partTime < sUnitsPerSecond ) {
 		uint32_t milliSecondsTimeTen = (partTime*10000)/sUnitsPerSecond;
@@ -1320,7 +1503,7 @@ static void getVMInfo(vm_statistics_data_t& info)
 {
 	mach_msg_type_number_t count = sizeof(vm_statistics_data_t) / sizeof(natural_t);
 	kern_return_t error = host_statistics(mach_host_self(), HOST_VM_INFO,
-							(host_info_t)&info, &count);
+										  (host_info_t)&info, &count);
 	if (error != KERN_SUCCESS) {
 		bzero(&info, sizeof(vm_statistics_data_t));
 	}
@@ -1348,7 +1531,7 @@ int main(int argc, const char* argv[])
 		// gather vm stats
 		if ( options.printStatistics() )
 			getVMInfo(statistics.vmStart);
-
+		
 		// update strings for error messages
 		showArch = options.printArchPrefix();
 		archName = options.architectureName();
@@ -1361,11 +1544,11 @@ int main(int argc, const char* argv[])
 		statistics.startResolver = mach_absolute_time();
 		ld::tool::Resolver resolver(options, inputFiles, state);
 		resolver.resolve();
-        
+		
 		// add dylibs used
 		statistics.startDylibs = mach_absolute_time();
 		inputFiles.dylibs(state);
-	
+		
 		// do initial section sorting so passes have rough idea of the layout
 		state.sortSections();
 		
@@ -1376,6 +1559,7 @@ int main(int argc, const char* argv[])
 		ld::passes::inits::doPass(options, state);
 		ld::passes::huge::doPass(options, state);
 		ld::passes::got::doPass(options, state);
+		//ld::passes::objc_constants::doPass(options, state);
 		ld::passes::tlvp::doPass(options, state);
 		ld::passes::dylibs::doPass(options, state);	// must be after stubs and GOT passes
 		ld::passes::order::doPass(options, state);
@@ -1386,19 +1570,19 @@ int main(int argc, const char* argv[])
 		ld::passes::dtrace::doPass(options, state);
 		ld::passes::compact_unwind::doPass(options, state);  // must be after order pass
 		ld::passes::bitcode_bundle::doPass(options, state);  // must be after dylib
-
+		
 		// Sort again so that we get the segments in order.
 		state.sortSections();
 		ld::passes::thread_starts::doPass(options, state);  // must be after dylib
 		
 		// sort final sections
 		state.sortSections();
-
+		
 		options.writeDependencyInfo();
-
+		
 		// write output file
 		statistics.startOutput = mach_absolute_time();
-		ld::tool::OutputFile out(options);
+		ld::tool::OutputFile out(options, state);
 		out.write(state);
 		statistics.startDone = mach_absolute_time();
 		
@@ -1414,10 +1598,10 @@ int main(int argc, const char* argv[])
 			printTime(" build atom list", statistics.startPasses				 -	statistics.startDylibs,				totalTime);
 			printTime(" passess", statistics.startOutput				 -	statistics.startPasses,				totalTime);
 			printTime(" write output", statistics.startDone				 -	statistics.startOutput,				totalTime);
-			fprintf(stderr, "pageins=%u, pageouts=%u, faults=%u\n", 
-								statistics.vmEnd.pageins-statistics.vmStart.pageins,
-								statistics.vmEnd.pageouts-statistics.vmStart.pageouts, 
-								statistics.vmEnd.faults-statistics.vmStart.faults);
+			fprintf(stderr, "pageins=%u, pageouts=%u, faults=%u\n",
+					statistics.vmEnd.pageins-statistics.vmStart.pageins,
+					statistics.vmEnd.pageouts-statistics.vmStart.pageouts,
+					statistics.vmEnd.faults-statistics.vmStart.faults);
 			char temp[40];
 			fprintf(stderr, "processed %3u object files,  totaling %15s bytes\n", inputFiles._totalObjectLoaded, commatize(inputFiles._totalObjectSize, temp));
 			fprintf(stderr, "processed %3u archive files, totaling %15s bytes\n", inputFiles._totalArchivesLoaded, commatize(inputFiles._totalArchiveSize, temp));
@@ -1429,6 +1613,12 @@ int main(int argc, const char* argv[])
 			fprintf(stderr, "ld: fatal warning(s) induced error (-fatal_warnings)\n");
 			return 1;
 		}
+		// <rdar://problem/61228255> need to flush stdout since we skipping some clean up in calling _exit()
+		fflush(stdout);
+		
+		// <rdar://problem/55031993> don't run terminators until all we can guarantee all threads are stopped
+		// <rdar://problem/56200095> don't run C++ destructors of stack objects to gain 5% linking perf win
+		_exit(0);
 	}
 	catch (const char* msg) {
 		if ( strstr(msg, "malformed") != NULL )
@@ -1437,10 +1627,9 @@ int main(int argc, const char* argv[])
 			fprintf(stderr, "ld: %s for architecture %s\n", msg, archName);
 		else
 			fprintf(stderr, "ld: %s\n", msg);
-		return 1;
+		// <rdar://50510752> exit but don't run termination routines
+		_exit(1);
 	}
-
-	return 0;
 }
 
 
@@ -1448,12 +1637,12 @@ int main(int argc, const char* argv[])
 // implement assert() function to print out a backtrace before aborting
 void __assert_rtn(const char* func, const char* file, int line, const char* failedexpr)
 {
-    Snapshot *snapshot = Snapshot::globalSnapshot;
-    
-    snapshot->setSnapshotMode(Snapshot::SNAPSHOT_DEBUG);
-    snapshot->createSnapshot();
+	Snapshot *snapshot = Snapshot::globalSnapshot;
+	
+	snapshot->setSnapshotMode(Snapshot::SNAPSHOT_DEBUG);
+	snapshot->createSnapshot();
 	snapshot->recordAssertionMessage("Assertion failed: (%s), function %s, file %s, line %d.\n", failedexpr, func, file, line);
-
+	
 	void* callStack[128];
 	int depth = ::backtrace(callStack, 128);
 	char* buffer = (char*)malloc(1024);
@@ -1472,9 +1661,9 @@ void __assert_rtn(const char* func, const char* file, int line, const char* fail
 		fprintf(stderr, "%d  %p  %s + %ld\n", i, callStack[i], symboName, offset);
 		snapshot->recordAssertionMessage("%d  %p  %s + %ld\n", i, callStack[i], symboName, offset);
 	}
-    fprintf(stderr, "A linker snapshot was created at:\n\t%s\n", snapshot->rootDir());
+	fprintf(stderr, "A linker snapshot was created at:\n\t%s\n", snapshot->rootDir());
 	fprintf(stderr, "ld: Assertion failed: (%s), function %s, file %s, line %d.\n", failedexpr, func, file, line);
-	exit(1);
+	_exit(1);
 }
 #endif
 

@@ -42,6 +42,10 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		0E5AA03029CD532600F9634B /* libcodedirectory.c in Sources */ = {isa = PBXBuildFile; fileRef = 0E5AA02C29CD532500F9634B /* libcodedirectory.c */; };
+		0E5AA03129CD532600F9634B /* ResponseFiles.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0E5AA02E29CD532600F9634B /* ResponseFiles.cpp */; };
+		0E5AA03429CD535000F9634B /* objc_constants.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0E5AA03329CD535000F9634B /* objc_constants.cpp */; };
+		0E5AA03629CD536900F9634B /* generic_dylib_file.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0E5AA03529CD536900F9634B /* generic_dylib_file.cpp */; };
 		83046A851C8FF2F700024A7E /* objcimageinfo.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 83046A841C8FF2D000024A7E /* objcimageinfo.cpp */; };
 		B028FCF21A9E7C3F00E3584B /* bitcode_bundle.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B028FCF11A9E7C3F00E3584B /* bitcode_bundle.cpp */; };
 		B3B672421406D42800A376BB /* Snapshot.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B3B672411406D42800A376BB /* Snapshot.cpp */; };
@@ -242,6 +246,15 @@
 
 /* Begin PBXFileReference section */
 		0E0268A426AABD5E00E22359 /* ld.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; path = ld.entitlements; sourceTree = "<group>"; };
+		0E5AA01729CC6ECC00F9634B /* libcommonCrypto.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libcommonCrypto.tbd; path = usr/lib/system/libcommonCrypto.tbd; sourceTree = SDKROOT; };
+		0E5AA02C29CD532500F9634B /* libcodedirectory.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; name = libcodedirectory.c; path = src/ld/libcodedirectory.c; sourceTree = "<group>"; };
+		0E5AA02D29CD532500F9634B /* ResponseFiles.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = ResponseFiles.h; path = src/ld/ResponseFiles.h; sourceTree = "<group>"; };
+		0E5AA02E29CD532600F9634B /* ResponseFiles.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = ResponseFiles.cpp; path = src/ld/ResponseFiles.cpp; sourceTree = "<group>"; };
+		0E5AA02F29CD532600F9634B /* libcodedirectory.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = libcodedirectory.h; path = src/ld/libcodedirectory.h; sourceTree = "<group>"; };
+		0E5AA03229CD535000F9634B /* objc_constants.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = objc_constants.h; sourceTree = "<group>"; };
+		0E5AA03329CD535000F9634B /* objc_constants.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = objc_constants.cpp; sourceTree = "<group>"; };
+		0E5AA03529CD536900F9634B /* generic_dylib_file.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = generic_dylib_file.cpp; sourceTree = "<group>"; };
+		0E5AA03729CD83DA00F9634B /* libSystem.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libSystem.tbd; path = usr/lib/libSystem.tbd; sourceTree = SDKROOT; };
 		0E7A664328D96DBD0009AABE /* json.hpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = json.hpp; sourceTree = "<group>"; };
 		83046A831C8FF23E00024A7E /* objcimageinfo */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = objcimageinfo; sourceTree = BUILT_PRODUCTS_DIR; };
 		83046A841C8FF2D000024A7E /* objcimageinfo.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = objcimageinfo.cpp; path = src/other/objcimageinfo.cpp; sourceTree = "<group>"; };
@@ -399,6 +412,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		0E5AA01629CC6ECC00F9634B /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				0E5AA03729CD83DA00F9634B /* libSystem.tbd */,
+				0E5AA01729CC6ECC00F9634B /* libcommonCrypto.tbd */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		0E7A664128D96D9F0009AABE /* utils */ = {
 			isa = PBXGroup;
 			children = (
@@ -425,6 +447,7 @@
 				F9B813B00EC27B9E00F94C13 /* other */,
 				F9B8137E0EC2651200F94C13 /* doc */,
 				F9023C3A06D5A23E001BBF46 /* Products */,
+				0E5AA01629CC6ECC00F9634B /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -457,6 +480,8 @@
 		F9AA650B1051BD2B003E3539 /* passes */ = {
 			isa = PBXGroup;
 			children = (
+				0E5AA03329CD535000F9634B /* objc_constants.cpp */,
+				0E5AA03229CD535000F9634B /* objc_constants.h */,
 				F9C2BC2B1F43B756000046CD /* inits.cpp */,
 				F9C2BC2C1F43B756000046CD /* inits.h */,
 				F9FC51081BC8915A00FEC3F8 /* code_dedup.cpp */,
@@ -512,6 +537,7 @@
 		F9AA65861051E750003E3539 /* parsers */ = {
 			isa = PBXGroup;
 			children = (
+				0E5AA03529CD536900F9634B /* generic_dylib_file.cpp */,
 				F91B7B0218987D5F0099486F /* libunwind */,
 				F9AA6784105700C2003E3539 /* opaque_section_file.cpp */,
 				F9AA6785105700C2003E3539 /* opaque_section_file.h */,
@@ -554,6 +580,10 @@
 		F9B813AD0EC27B8500F94C13 /* ld */ = {
 			isa = PBXGroup;
 			children = (
+				0E5AA02C29CD532500F9634B /* libcodedirectory.c */,
+				0E5AA02F29CD532600F9634B /* libcodedirectory.h */,
+				0E5AA02E29CD532600F9634B /* ResponseFiles.cpp */,
+				0E5AA02D29CD532500F9634B /* ResponseFiles.h */,
 				F9AA69BF10583E19003E3539 /* Resolver.cpp */,
 				F9AA69C010583E19003E3539 /* Resolver.h */,
 				F9AA69B410583C0C003E3539 /* SymbolTable.cpp */,
@@ -964,14 +994,17 @@
 			files = (
 				F9FC510A1BC893C400FEC3F8 /* code_dedup.cpp in Sources */,
 				C1E27B581F6B1B68003B8FA6 /* thread_starts.cpp in Sources */,
+				0E5AA03129CD532600F9634B /* ResponseFiles.cpp in Sources */,
 				FA95D6141AB25CF400395811 /* textstub_dylib_file.cpp in Sources */,
 				F9C0D4BD06DD28D2001C7193 /* Options.cpp in Sources */,
+				0E5AA03429CD535000F9634B /* objc_constants.cpp in Sources */,
 				F9C12F3721B770500031CED8 /* PlatformSupport.cpp in Sources */,
 				F9023C4E06D5A272001BBF46 /* ld.cpp in Sources */,
 				F9AA65891051E750003E3539 /* macho_relocatable_file.cpp in Sources */,
 				F9AA65DD1051EC4A003E3539 /* archive_file.cpp in Sources */,
 				F9AA65DE1051EC4A003E3539 /* lto_file.cpp in Sources */,
 				F9AA65DF1051EC4A003E3539 /* macho_dylib_file.cpp in Sources */,
+				0E5AA03029CD532600F9634B /* libcodedirectory.c in Sources */,
 				F9EA7584097882F3008B4F1D /* debugline.c in Sources */,
 				F9AA687C10572E27003E3539 /* InputFiles.cpp in Sources */,
 				F9AA69B610583C0C003E3539 /* SymbolTable.cpp in Sources */,
@@ -986,6 +1019,7 @@
 				F9C2BC2D1F43B875000046CD /* inits.cpp in Sources */,
 				F9849E3610B38EF5009E9878 /* order.cpp in Sources */,
 				F984A38210BB4B0D009E9878 /* branch_island.cpp in Sources */,
+				0E5AA03629CD536900F9634B /* generic_dylib_file.cpp in Sources */,
 				F9A4DB9110F816FF00BD8423 /* objc.cpp in Sources */,
 				F9AE20FF1107D1440007ED5D /* dylibs.cpp in Sources */,
 				F93CB248116E69EB003233B8 /* tlvp.cpp in Sources */,
@@ -1237,10 +1271,16 @@
 					"$(SRCROOT)/../llvm-8.0.1.src/include",
 					"$(SRCROOT)/../dyld-733.6/include",
 					"$(SRCROOT)/../cfe-8.0.1.src/include",
+					"$(SRCROOT)/../xnu-xnu-8792.81.2/EXTERNAL_HEADERS",
 				);
 				INSTALL_PATH = "$(DT_VARIANT)/$(TOOLCHAIN_INSTALL_DIR)/usr/bin";
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../lib/";
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/usr/lib/system",
+				);
 				LINKER_DISPLAYS_MANGLED_NAMES = NO;
+				MACOSX_DEPLOYMENT_TARGET = 10.13;
 				ONLY_ACTIVE_ARCH = NO;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-stdlib=libc++",
@@ -1327,9 +1367,15 @@
 					"$(SRCROOT)/../llvm-8.0.1.src/include",
 					"$(SRCROOT)/../dyld-733.6/include",
 					"$(SRCROOT)/../cfe-8.0.1.src/include",
+					"$(SRCROOT)/../xnu-xnu-8792.81.2/EXTERNAL_HEADERS",
 				);
 				INSTALL_PATH = "$(DT_VARIANT)/$(TOOLCHAIN_INSTALL_DIR)/usr/bin";
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../lib/";
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/usr/lib/system",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 10.13;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-stdlib=libc++",
 					"$(OTHER_CPLUSPLUSFLAGS)",
@@ -1629,9 +1675,15 @@
 					"$(SRCROOT)/../llvm-8.0.1.src/include",
 					"$(SRCROOT)/../dyld-733.6/include",
 					"$(SRCROOT)/../cfe-8.0.1.src/include",
+					"$(SRCROOT)/../xnu-xnu-8792.81.2/EXTERNAL_HEADERS",
 				);
 				INSTALL_PATH = "$(DT_VARIANT)/$(TOOLCHAIN_INSTALL_DIR)/usr/bin";
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../lib/";
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/usr/lib/system",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 10.13;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-stdlib=libc++",
 					"$(OTHER_CPLUSPLUSFLAGS)",

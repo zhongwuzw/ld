@@ -42,6 +42,7 @@ namespace branch_island {
 
 
 static std::map<const Atom*, uint64_t> sAtomToAddress;
+static std::map<const Atom*, unsigned> sAtomToSectionIndex;
 
 
 struct TargetAndOffset { const ld::Atom* atom; uint32_t offset; };
@@ -61,7 +62,7 @@ static bool _s_log = false;
 static ld::Section _s_text_section("__TEXT", "__text", ld::Section::typeCode);
 
 
-#if SUPPORT_ARCH_arm64
+#if SUPPORT_ARCH_arm64 || SUPPORT_ARCH_arm64_32
 
 class ARM64BranchIslandAtom : public ld::Atom {
 public:
@@ -127,15 +128,15 @@ private:
 
 
 
-class ARMtoThumb1BranchIslandAtom : public ld::Atom {
+class Thumb1toThumbBranchIslandAtom : public ld::Atom {
 public:
-											ARMtoThumb1BranchIslandAtom(const char* nm, const ld::Atom* target, TargetAndOffset finalTarget)
+											Thumb1toThumbBranchIslandAtom(const char* nm, const ld::Atom* target, TargetAndOffset finalTarget)
 				: ld::Atom(_s_text_section, ld::Atom::definitionRegular, ld::Atom::combineNever,
 							ld::Atom::scopeLinkageUnit, ld::Atom::typeBranchIsland, 
-							ld::Atom::symbolTableIn, false, false, false, ld::Atom::Alignment(2)), 
+							ld::Atom::symbolTableIn, false, true, false, ld::Atom::Alignment(2)),
 				_name(nm),
 				_finalTarget(finalTarget) {
-					if (_s_log) fprintf(stderr, "%p: ARM-to-thumb1 branch island to final target %s\n", 
+					if (_s_log) fprintf(stderr, "%p: Thumb1-to-thumb branch island to final target %s\n",
 										this, finalTarget.atom->name());
 				}
 
@@ -145,14 +146,16 @@ public:
 	virtual uint64_t						objectAddress() const			{ return 0; }
 	virtual void							copyRawContent(uint8_t buffer[]) const {
 		// There is no large displacement thumb1 branch instruction.
-		// Instead use ARM instructions that can jump to thumb.
 		// we use a 32-bit displacement, so we can directly jump to target which means no island hopping
-		int64_t displacement = _finalTarget.atom->finalAddress() + _finalTarget.offset - (this->finalAddress() + 12);
+		int64_t displacement = _finalTarget.atom->finalAddress() + _finalTarget.offset - (this->finalAddress() + 8);
 		if ( _finalTarget.atom->isThumb() )
 			displacement |= 1;
-		OSWriteLittleInt32(&buffer[ 0], 0, 0xe59fc004);	// 	ldr  ip, pc + 4
-		OSWriteLittleInt32(&buffer[ 4], 0, 0xe08fc00c);	// 	add	 ip, pc, ip
-		OSWriteLittleInt32(&buffer[ 8], 0, 0xe12fff1c);	// 	bx	 ip
+		OSWriteLittleInt16(&buffer[ 0], 0, 0x4684); // mov ip, r0
+		OSWriteLittleInt16(&buffer[ 2], 0, 0x4802); // ldr r0, [pc, #8]
+		OSWriteLittleInt16(&buffer[ 4], 0, 0x4478); // add r0, pc
+		OSWriteLittleInt16(&buffer[ 6], 0, 0xb401); // push {r0}
+		OSWriteLittleInt16(&buffer[ 8], 0, 0x4660); // mov r0, ip
+		OSWriteLittleInt16(&buffer[10], 0, 0xbd00); // pop {pc}
 		OSWriteLittleInt32(&buffer[12], 0, displacement);	// 	.long target-this		
 	}
 	virtual void							setScope(Scope)					{ }
@@ -201,7 +204,7 @@ public:
 											Thumb2toThumbBranchAbsoluteIslandAtom(const char* nm, const ld::Section& inSect, TargetAndOffset finalTarget)
 				: ld::Atom(inSect, ld::Atom::definitionRegular, ld::Atom::combineNever,
 							ld::Atom::scopeLinkageUnit, ld::Atom::typeBranchIsland, 
-							ld::Atom::symbolTableIn, false, true, false, ld::Atom::Alignment(1)), 
+							ld::Atom::symbolTableIn, false, true, false, ld::Atom::Alignment(1)),
 				_name(nm),
 				_fixup1(0, ld::Fixup::k1of2, ld::Fixup::kindSetTargetAddress, finalTarget.atom),
 				_fixup2(0, ld::Fixup::k2of2, ld::Fixup::kindStoreThumbLow16),
@@ -236,31 +239,35 @@ private:
 
 
 
-class NoPicARMtoThumbMBranchIslandAtom : public ld::Atom {
+class NoPicThumb1toThumbBranchIslandAtom : public ld::Atom {
 public:
-											NoPicARMtoThumbMBranchIslandAtom(const char* nm, const ld::Atom* target, TargetAndOffset finalTarget)
+											NoPicThumb1toThumbBranchIslandAtom(const char* nm, const ld::Atom* target, TargetAndOffset finalTarget)
 				: ld::Atom(_s_text_section, ld::Atom::definitionRegular, ld::Atom::combineNever,
 							ld::Atom::scopeLinkageUnit, ld::Atom::typeBranchIsland, 
-							ld::Atom::symbolTableIn, false, false, false, ld::Atom::Alignment(2)), 
+							ld::Atom::symbolTableIn, false, true, false, ld::Atom::Alignment(2)),
 				_name(nm),
 				_finalTarget(finalTarget) {
-					if (_s_log) fprintf(stderr, "%p: NoPIC ARM-to-Thumb branch island to final target %s\n", 
+					if (_s_log) fprintf(stderr, "%p: NoPIC Thumb1-to-Thumb branch island to final target %s\n",
 										this, finalTarget.atom->name());
 					}
 
 	virtual const ld::File*					file() const					{ return NULL; }
 	virtual const char*						name() const					{ return _name; }
-	virtual uint64_t						size() const					{ return 8; }
+	virtual uint64_t						size() const					{ return 16; }
 	virtual uint64_t						objectAddress() const			{ return 0; }
 	virtual void							copyRawContent(uint8_t buffer[]) const {
 		// There is no large displacement thumb1 branch instruction.
-		// Instead use ARM instructions that can jump to thumb.
 		// we use a 32-bit displacement, so we can directly jump to final target which means no island hopping
 		uint32_t targetAddr = _finalTarget.atom->finalAddress();
 		if ( _finalTarget.atom->isThumb() )
 			targetAddr |= 1;
-		OSWriteLittleInt32(&buffer[0], 0, 0xe51ff004);	// 	ldr	pc, [pc, #-4]
-		OSWriteLittleInt32(&buffer[4], 0, targetAddr);	// 	.long target-this		
+		OSWriteLittleInt16(&buffer[ 0], 0, 0x4684);     // mov ip, r0
+		OSWriteLittleInt16(&buffer[ 2], 0, 0x4802);     // ldr r0, [pc, #8]
+		OSWriteLittleInt16(&buffer[ 4], 0, 0xb401);     // push {r0}
+		OSWriteLittleInt16(&buffer[ 6], 0, 0x4660);     // mov r0, ip
+		OSWriteLittleInt16(&buffer[ 8], 0, 0xbd00);     // pop {pc}
+		OSWriteLittleInt16(&buffer[10], 0, 0x46c0);     // nop (mov r8, r8)
+		OSWriteLittleInt32(&buffer[12], 0, targetAddr); // .long target
 	}
 	virtual void							setScope(Scope)					{ }
 
@@ -297,17 +304,17 @@ static ld::Atom* makeBranchIsland(const Options& opts, ld::Fixup::Kind kind, int
 					return new Thumb2toThumbBranchIslandAtom(name, nextTarget, finalTarget);
 				}
 				else if ( opts.outputSlidable() ) {
-					return new ARMtoThumb1BranchIslandAtom(name, nextTarget, finalTarget);
+					return new Thumb1toThumbBranchIslandAtom(name, nextTarget, finalTarget);
 				}
 				else {
-					return new NoPicARMtoThumbMBranchIslandAtom(name, nextTarget, finalTarget);
+					return new NoPicThumb1toThumbBranchIslandAtom(name, nextTarget, finalTarget);
 				}
 			}
 			else {
 				return new ARMtoARMBranchIslandAtom(name, nextTarget, finalTarget);
 			}
 			break;
-#if SUPPORT_ARCH_arm64
+#if SUPPORT_ARCH_arm64 || SUPPORT_ARCH_arm64_32
 	    case ld::Fixup::kindStoreARM64Branch26:
 		case ld::Fixup::kindStoreTargetAddressARM64Branch26:
 			return new ARM64BranchIslandAtom(name, nextTarget, finalTarget);
@@ -337,6 +344,11 @@ static uint64_t textSizeWhenMightNeedBranchIslands(const Options& opts, bool see
 			return 128000000; // arm64 can branch +/- 128MB
 			break;
 #endif
+#if SUPPORT_ARCH_arm64_32
+		case CPU_TYPE_ARM64_32:
+			return 128000000; // arm64_32 can branch +/- 128MB
+			break;
+#endif
 	}
 	assert(0 && "unexpected architecture");
 	return 0x100000000LL;
@@ -356,6 +368,11 @@ static uint64_t maxDistanceBetweenIslands(const Options& opts, bool seenThumbBra
 			break;
 #if SUPPORT_ARCH_arm64
 		case CPU_TYPE_ARM64:
+			return 124*1024*1024;		 // 4MB of branch islands per 128MB
+			break;
+#endif
+#if SUPPORT_ARCH_arm64_32
+		case CPU_TYPE_ARM64_32:
 			return 124*1024*1024;		 // 4MB of branch islands per 128MB
 			break;
 #endif
@@ -431,7 +448,7 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
 			}
 			if ( haveBranch && (target->contentType() != ld::Atom::typeStub) ) {
 				// <rdar://problem/14792124> haveCrossSectionBranches only applies to -preload builds
-				if ( preload && (atom->section() != target->section()) )
+				if ( preload && (sAtomToSectionIndex[atom] != sAtomToSectionIndex[target]) )
 					haveCrossSectionBranches = true;
 			}
 		}
@@ -532,7 +549,7 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
 				case ld::Fixup::kindStoreThumbBranch22:
 				case ld::Fixup::kindStoreTargetAddressARMBranch24:
 				case ld::Fixup::kindStoreTargetAddressThumbBranch22:
-#if SUPPORT_ARCH_arm64
+#if SUPPORT_ARCH_arm64 || SUPPORT_ARCH_arm64_32
 				case ld::Fixup::kindStoreARM64Branch26:
 				case ld::Fixup::kindStoreTargetAddressARM64Branch26:
 #endif
@@ -542,7 +559,7 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
                     break;   
 			}
 			if ( haveBranch ) {
-				bool crossSectionBranch = ( preload && (atom->section() != target->section()) );
+				bool crossSectionBranch = ( preload && (sAtomToSectionIndex[atom] != sAtomToSectionIndex[target]) );
 				int64_t srcAddr = atom->sectionOffset() + fit->offsetInAtom;
 				int64_t dstAddr = target->sectionOffset() + addend;
 				if ( preload ) {
@@ -666,6 +683,7 @@ static void buildAddressMap(const Options& opts, ld::Internal& state) {
 	// Assign addresses to atoms in a side table
 	const bool log = false;
 	if ( log ) fprintf(stderr, "buildAddressMap()\n");
+	unsigned sectionIndex = 1;
 	for (std::vector<ld::Internal::FinalSection*>::iterator sit = state.sections.begin(); sit != state.sections.end(); ++sit) {
 		ld::Internal::FinalSection* sect = *sit;
 		uint16_t maxAlignment = 0;
@@ -690,9 +708,11 @@ static void buildAddressMap(const Options& opts, ld::Internal& state) {
 			
 			if ( log ) fprintf(stderr, "    0x%08llX atom=%p, name=%s\n", sect->address+offset, atom, atom->name());
 			sAtomToAddress[atom] = sect->address + offset;
-			
+			sAtomToSectionIndex[atom] = sectionIndex;
+
 			offset += atom->size();
 		}
+		++sectionIndex;
 	}
 
 	
@@ -713,6 +733,9 @@ void doPass(const Options& opts, ld::Internal& state)
 		case CPU_TYPE_ARM:
 #if SUPPORT_ARCH_arm64
 		case CPU_TYPE_ARM64:
+#endif
+#if SUPPORT_ARCH_arm64_32
+		case CPU_TYPE_ARM64_32:
 #endif
 			break;
 		default:
