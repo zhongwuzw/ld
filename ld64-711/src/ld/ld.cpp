@@ -1588,7 +1588,7 @@ int main(int argc, const char* argv[])
 		
 		// print statistics
 		//mach_o::relocatable::printCounts();
-		if ( options.printStatistics() ) {
+//		if ( options.printStatistics() ) {
 			getVMInfo(statistics.vmEnd);
 			uint64_t totalTime = statistics.startDone - statistics.startTool;
 			printTime("ld total time", totalTime, totalTime);
@@ -1607,7 +1607,7 @@ int main(int argc, const char* argv[])
 			fprintf(stderr, "processed %3u archive files, totaling %15s bytes\n", inputFiles._totalArchivesLoaded, commatize(inputFiles._totalArchiveSize, temp));
 			fprintf(stderr, "processed %3u dylib files\n", inputFiles._totalDylibsLoaded);
 			fprintf(stderr, "wrote output file            totaling %15s bytes\n", commatize(out.fileSize(), temp));
-		}
+//		}
 		// <rdar://problem/6780050> Would like linker warning to be build error.
 		if ( options.errorBecauseOfWarnings() ) {
 			fprintf(stderr, "ld: fatal warning(s) induced error (-fatal_warnings)\n");

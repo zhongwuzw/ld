@@ -2517,6 +2517,22 @@ void Options::parse(int argc, const char* argv[])
 	// Store the original args in the link snapshot.
 	fLinkSnapshot.recordRawArgs(argc, argv);
 	
+	std::string current_exec_name = argv[0]; // Name of the current exec program
+	std::vector<std::string> all_args;
+	warning("======== begin new ld ==========");
+	if (argc > 1) {
+		all_args.assign(argv + 1, argv + argc);
+		
+		std::string args;
+		for (int i = 1; i < argc; i++)
+		{
+			args.append(" ");
+			args.append(argv[i]);
+		}
+		
+		warning("%s", args.c_str());
+	}
+	
 	// pass one builds search list from -L and -F options
 	this->buildSearchPaths(argc, argv);
 	
