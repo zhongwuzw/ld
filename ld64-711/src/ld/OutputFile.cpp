@@ -239,6 +239,8 @@ void OutputFile::enumerateFixups(const ld::Atom* atom, ld::Internal& state, cons
 }
 
 /*
+ Mod init is more expensive for App startup, so let's check them and forbidden them.
+ Run linker executable by options like below:
  -arch arm64 -ios_version_min 10.0 -dylib -undefined dynamic_lookup -ObjC -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk -force_load /Users/zhongwu/Documents/workspace/FrameworkTest.framework/FrameworkTest -o /Users/zhongwu/Documents/workspace/test1.dylib -compatibility_version 1 -current_version 1 -mod_init_check_file_path /Users/zhongwu/Documents/workspace/ -lSystem
  */
 void OutputFile::printModInitInfo(ld::Internal& state)
